@@ -146,19 +146,22 @@ def parse_entries(html: str) -> list[dict]:
 
 
 def load_state():
-    """Returns (keys:set, legacy_isins:set|None). Old format = plain list of
-    ISIN strings; we migrate it silently."""
+    """Returns (keys:set, version:int).
+    version 0 = no state (first run), 1 = old ISIN list, 2 = dict without
+    version tag (pdf-keyed), 3 = current format (pdf+isin keyed)."""
     if not STATE_FILE.exists():
-        return set(), None
+        return set(), 0
     data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    if isinstance(data, dict):
-        return set(data.get("keys", [])), None
-    return set(), set(data)  # old format
+    if isinstance(data, list):
+        return set("isin:" + i for i in data), 1
+    if data.get("v") == 3:
+        return set(data.get("keys", [])), 3
+    return set(data.get("keys", [])), 2
 
 
 def save_state(keys: set):
     STATE_FILE.write_text(
-        json.dumps({"keys": sorted(keys)}, indent=2), encoding="utf-8"
+        json.dumps({"v": 3, "keys": sorted(keys)}, indent=2), encoding="utf-8"
     )
 
 
@@ -186,38 +189,67 @@ def main():
         send_telegram("⚠️ NBG monitor: no entries parsed. Check page structure.")
         sys.exit(1)
 
-    seen_keys, legacy_isins = load_state()
-    current_keys = {e["key"] for e in entries}
+    seen, version = load_state()
 
-    if not seen_keys and legacy_isins is None:
-        save_state(current_keys)
-        print(f"Baseline saved: {len(current_keys)} entries.")
-        return
+    all_keys = set(seen)
+    alerts = []  # (entry, kind) where kind: "new" | "isin_assigned"
 
-    if legacy_isins is not None:
-        # Migrating from old ISIN-list state: alert only on ISINs that are
-        # genuinely new; baseline everything else (incl. all PDFs) silently.
-        new = [e for e in entries if e["isin"] and e["isin"] not in legacy_isins]
-        print(f"Migrated old state ({len(legacy_isins)} ISINs) to key format.")
-    else:
-        new = [e for e in entries if e["key"] not in seen_keys]
+    for e in entries:
+        k_pdf = e["key"] if e["key"].startswith("pdf:") else ""
+        k_isin = ("isin:" + e["isin"]) if e["isin"] else ""
 
-    for e in new:
-        stage = "" if e["isin"] else "\n⏳ ISIN ჯერ არ არის მინიჭებული (სავარაუდოდ bookbuilding ეტაპი)"
-        msg = (
-            "🆕 <b>ახალი პროსპექტი გამოქვეყნდა NBG-ზე</b>\n\n"
-            f"ემიტენტი: {e['issuer']}\n"
-            f"ISIN: {e['isin'] or '—'}\n"
-            f"თარიღი: {e['date'] or '—'}\n"
-            f"პროსპექტი: {e['pdf'] or 'ლინკი ვერ მოიძებნა'}"
-            f"{stage}\n\n{URL}"
-        )
+        new_pdf = bool(k_pdf) and k_pdf not in seen
+        new_isin = bool(k_isin) and k_isin not in seen
+
+        if version == 0:
+            pass  # first run: baseline everything silently
+        elif version == 1:
+            # old ISIN-list state: alert only genuinely new ISINs
+            if new_isin:
+                alerts.append((e, "new"))
+        elif version == 2:
+            # pdf-keyed state: alert on new PDFs; absorb all ISIN keys
+            # silently this one time (they were never tracked before)
+            if new_pdf:
+                alerts.append((e, "new"))
+        else:
+            if new_pdf:
+                alerts.append((e, "new"))
+            elif new_isin:
+                alerts.append((e, "isin_assigned"))
+
+        if k_pdf:
+            all_keys.add(k_pdf)
+        if k_isin:
+            all_keys.add(k_isin)
+
+    for e, kind in alerts:
+        if kind == "isin_assigned":
+            msg = (
+                "✅ <b>ISIN მიენიჭა / საბოლოო ეტაპი</b>\n\n"
+                f"ემიტენტი: {e['issuer']}\n"
+                f"ISIN: {e['isin']}\n"
+                f"თარიღი: {e['date'] or '—'}\n"
+                f"პროსპექტი: {e['pdf'] or '—'}\n\n{URL}"
+            )
+        else:
+            stage = "" if e["isin"] else "\n⏳ ISIN ჯერ არ არის მინიჭებული (სავარაუდოდ bookbuilding ეტაპი)"
+            msg = (
+                "🆕 <b>ახალი პროსპექტი გამოქვეყნდა NBG-ზე</b>\n\n"
+                f"ემიტენტი: {e['issuer']}\n"
+                f"ISIN: {e['isin'] or '—'}\n"
+                f"თარიღი: {e['date'] or '—'}\n"
+                f"პროსპექტი: {e['pdf'] or 'ლინკი ვერ მოიძებნა'}"
+                f"{stage}\n\n{URL}"
+            )
         send_telegram(msg)
-        print(f"Alerted: {e['key']} ({e['issuer']})")
+        print(f"Alerted ({kind}): {e['issuer']} {e['isin'] or e['key']}")
 
-    save_state(seen_keys | current_keys)
-    if not new:
-        print(f"No new prospectuses. {len(current_keys)} entries on page.")
+    save_state(all_keys)
+    if version == 0:
+        print(f"Baseline saved: {len(all_keys)} keys.")
+    elif not alerts:
+        print(f"No new prospectuses. {len(all_keys)} keys tracked.")
 
 
 if __name__ == "__main__":
