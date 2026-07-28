@@ -2,18 +2,26 @@ name: NBG prospectus monitor
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # every 15 min (GitHub may delay a few min)
-  workflow_dispatch:          # manual trigger button
+    - cron: "*/15 * * * *"   # page check, every 15 min
+    - cron: "0 17 * * *"     # 17:00 UTC = 21:00 Tbilisi (Georgia is UTC+4, no DST)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        required: true
+        default: check
+        type: choice
+        options: [check, digest]
 
 permissions:
-  contents: write             # needed to commit seen.json back
+  contents: write
 
 concurrency:
-  group: nbg-monitor
+  group: nbg-monitor        # serialises checks and the digest so pushes can't collide
   cancel-in-progress: false
 
 jobs:
-  check:
+  run:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,20 +31,31 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          pip install requests playwright
-          playwright install chromium --with-deps
+        run: pip install requests
+        # Playwright is deliberately NOT installed: the NBG table is present in
+        # the raw HTML, so plain requests is enough and each run takes ~20s
+        # instead of ~3 min. If NBG ever moves the table to client-side
+        # rendering, add back:  pip install playwright && playwright install chromium --with-deps
 
       - name: Run monitor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python monitor.py
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 17 * * *" ] || [ "${{ inputs.mode }}" = "digest" ]; then
+            echo "Running daily digest"
+            python monitor.py --digest
+          else
+            echo "Running page check"
+            python monitor.py
+          fi
 
       - name: Commit updated state
         run: |
           git config user.name "nbg-monitor-bot"
           git config user.email "bot@users.noreply.github.com"
           git add seen.json
-          git diff --cached --quiet || git commit -m "Update seen ISINs"
+          git diff --cached --quiet && exit 0
+          git commit -m "Update NBG state"
+          git pull --rebase --autostash || true
           git push
