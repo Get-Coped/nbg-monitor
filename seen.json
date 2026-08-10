@@ -1,7 +1,7 @@
 {
  "v": 5,
  "fails": 0,
- "last_ok": "2026-08-10T14:02:12.518186+04:00",
+ "last_ok": "2026-08-10T18:33:58.000898+04:00",
  "rows": {
   "row:675588824:": {
    "id": "675588824",
@@ -14,31 +14,31 @@
    "invalid_date": false,
    "site": "https://moneymuseum.nbg.gov.ge/index.php?m=2"
   },
-  "pdf:https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf": {
+  "isin:GE2700605597": {
    "id": "431176817",
    "issuer": "ინფორმაცია შპს „ლოპოტა“",
    "type": "ობლიგაცია",
-   "isin": "",
-   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf?v=sh9g8",
-   "pdf_key": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf",
-   "date": "",
-   "invalid_date": true,
+   "isin": "GE2700605597",
+   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-euro1008.pdf?v=6a363",
+   "pdf_key": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-euro1008.pdf",
+   "date": "10.08.2026",
+   "invalid_date": false,
    "site": "https://lopotaresort.com/"
   },
-  "pdf:https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-11mln-usd.pdf": {
+  "isin:GE2700605589": {
    "id": "431176817",
-   "issuer": "შპს „ლოპოტა“",
+   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-euro1008.pdf\"",
    "type": "ობლიგაცია",
-   "isin": "",
-   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-11mln-usd.pdf?v=fqwf2",
-   "pdf_key": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-11mln-usd.pdf",
+   "isin": "GE2700605589",
+   "pdf": "",
+   "pdf_key": "",
    "date": "",
    "invalid_date": true,
    "site": "https://lopotaresort.com/"
   },
   "isin:GE2700505565": {
    "id": "431176817",
-   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-11mln-usd.pdf\"",
+   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-usd1008.pdf\"",
    "type": "ობლიგაცია",
    "isin": "GE2700505565",
    "pdf": "",
@@ -630,17 +630,6 @@
    "invalid_date": true,
    "site": "https://ka.sarajishvili.com/"
   },
-  "row:431176817:ობლიგაცია": {
-   "id": "431176817",
-   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf\"",
-   "type": "ობლიგაცია",
-   "isin": "",
-   "pdf": "",
-   "pdf_key": "",
-   "date": "",
-   "invalid_date": true,
-   "site": "https://lopotaresort.com/"
-  },
   "row:208147637:": {
    "id": "208147637",
    "issuer": "ჩვ. აქცია\",\"contactInfo\"",
@@ -795,6 +784,61 @@
    "ts": "2026-08-07T19:14:38.563169+04:00",
    "kind": "minor",
    "text": "დოკუმენტები (GE2700604673): website updated"
+  },
+  {
+   "ts": "2026-08-10T18:33:58.000898+04:00",
+   "kind": "new_security",
+   "issuer": "ინფორმაცია შპს „ლოპოტა“",
+   "id": "431176817",
+   "isin": "GE2700605597",
+   "type": "ობლიგაცია",
+   "date": "10.08.2026",
+   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-euro1008.pdf?v=6a363",
+   "site": "https://lopotaresort.com/"
+  },
+  {
+   "ts": "2026-08-10T18:33:58.000898+04:00",
+   "kind": "new_security",
+   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-საბოლოო-პროსპექტი-euro1008.pdf\"",
+   "id": "431176817",
+   "isin": "GE2700605589",
+   "type": "ობლიგაცია",
+   "date": "",
+   "pdf": "",
+   "site": "https://lopotaresort.com/"
+  },
+  {
+   "ts": "2026-08-10T18:33:58.000898+04:00",
+   "kind": "removed",
+   "issuer": "ინფორმაცია შპს „ლოპოტა“",
+   "id": "431176817",
+   "isin": "",
+   "type": "ობლიგაცია",
+   "date": "",
+   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf?v=sh9g8",
+   "site": "https://lopotaresort.com/"
+  },
+  {
+   "ts": "2026-08-10T18:33:58.000898+04:00",
+   "kind": "removed",
+   "issuer": "შპს „ლოპოტა“",
+   "id": "431176817",
+   "isin": "",
+   "type": "ობლიგაცია",
+   "date": "",
+   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-11mln-usd.pdf?v=fqwf2",
+   "site": "https://lopotaresort.com/"
+  },
+  {
+   "ts": "2026-08-10T18:33:58.000898+04:00",
+   "kind": "removed",
+   "issuer": "შპს-ლოპოტა-ობლიგაციების-ემისიის-წინასწარი-პროსპექტი-signed-7mln-eur.pdf\"",
+   "id": "431176817",
+   "isin": "",
+   "type": "ობლიგაცია",
+   "date": "",
+   "pdf": "",
+   "site": "https://lopotaresort.com/"
   }
  ]
 }
