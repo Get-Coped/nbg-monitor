@@ -1,7 +1,7 @@
 {
  "v": 5,
  "fails": 0,
- "last_ok": "2026-09-03T10:26:36.671018+04:00",
+ "last_ok": "2026-09-03T15:38:33.499080+04:00",
  "rows": {
   "row:675588824:": {
    "id": "675588824",
@@ -19,7 +19,7 @@
    "issuer": "ინფორმაცია შპს მიკროსაფინანსო ორგანიზაცია რიკო ექსპრესი",
    "type": "ობლიგაცია",
    "isin": "",
-   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/რიკო-წინასწარი-პროსპექტი-signed.pdf?v=afirn",
+   "pdf": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/რიკო-წინასწარი-პროსპექტი-signed.pdf?v=8b3r6",
    "pdf_key": "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/რიკო-წინასწარი-პროსპექტი-signed.pdf",
    "date": "",
    "invalid_date": true,
@@ -575,19 +575,8 @@
    "invalid_date": true,
    "site": "https://vtb.ge"
   },
-  "isin:GE1100000474": {
-   "id": "203828304",
-   "issuer": "\",\"approvedDocuments\"",
-   "type": "ჩვ. აქცია",
-   "isin": "GE1100000474",
-   "pdf": "",
-   "pdf_key": "",
-   "date": "",
-   "invalid_date": true,
-   "site": "https://libertybank.ge"
-  },
   "isin:GE1100003163": {
-   "id": "202052580",
+   "id": "203828304",
    "issuer": "\",\"approvedDocuments\"",
    "type": "ჩვ. აქცია",
    "isin": "GE1100003163",
@@ -595,7 +584,7 @@
    "pdf_key": "",
    "date": "",
    "invalid_date": true,
-   "site": "http://www.telasi.ge/"
+   "site": "https://libertybank.ge"
   },
   "isin:GE1100000037": {
    "id": "200095887",
@@ -1344,6 +1333,22 @@
    "ts": "2026-09-01T14:30:57.887116+04:00",
    "kind": "minor",
    "text": "პროსპექტი-65m.pdf\" (GE2700604186): website updated"
+  },
+  {
+   "ts": "2026-09-03T15:38:33.499080+04:00",
+   "kind": "removed",
+   "issuer": "\",\"approvedDocuments\"",
+   "id": "203828304",
+   "isin": "GE1100000474",
+   "type": "ჩვ. აქცია",
+   "date": "",
+   "pdf": "",
+   "site": "https://libertybank.ge"
+  },
+  {
+   "ts": "2026-09-03T15:38:33.499080+04:00",
+   "kind": "minor",
+   "text": "\",\"approvedDocuments\" (GE1100003163): website updated"
   }
  ]
 }
