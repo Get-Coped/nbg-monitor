@@ -2,8 +2,13 @@ name: NBG prospectus monitor
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # page check, every 15 min
-    - cron: "0 17 * * *"     # 17:00 UTC = 21:00 Tbilisi (Georgia is UTC+4, no DST)
+    # Four page requests a day: 08:15, 12:15, 16:15, 20:15 Tbilisi (UTC+4).
+    - cron: "15 4,8,12,16 * * *"
+    # Digest reads saved data only. GitHub schedules can run late.
+    - cron: "0 17 * * *"
+  push:
+    branches: [main]
+    paths: [monitor.py, registry.py, prospectus.py, requirements.txt, .github/workflows/monitor.yml]
   workflow_dispatch:
     inputs:
       mode:
@@ -17,45 +22,43 @@ permissions:
   contents: write
 
 concurrency:
-  group: nbg-monitor        # serialises checks and the digest so pushes can't collide
+  group: nbg-monitor
   cancel-in-progress: false
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-
+        with:
+          ref: main
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
+          cache: pip
       - name: Install dependencies
-        run: pip install requests
-        # Playwright is deliberately NOT installed: the NBG table is present in
-        # the raw HTML, so plain requests is enough and each run takes ~20s
-        # instead of ~3 min. If NBG ever moves the table to client-side
-        # rendering, add back:  pip install playwright && playwright install chromium --with-deps
-
+        run: pip install -r requirements.txt
       - name: Run monitor
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SCHEDULE: ${{ github.event.schedule }}
+          MODE: ${{ inputs.mode }}
         run: |
-          if [ "${{ github.event.schedule }}" = "0 17 * * *" ] || [ "${{ inputs.mode }}" = "digest" ]; then
-            echo "Running daily digest"
+          if [ "$SCHEDULE" = "0 17 * * *" ] || [ "$MODE" = "digest" ]; then
             python monitor.py --digest
           else
-            echo "Running page check"
             python monitor.py
           fi
-
-      - name: Commit updated state
+      - name: Persist state even after a fetch or delivery failure
+        if: ${{ always() }}
         run: |
           git config user.name "nbg-monitor-bot"
           git config user.email "bot@users.noreply.github.com"
           git add seen.json
           git diff --cached --quiet && exit 0
           git commit -m "Update NBG state"
-          git pull --rebase --autostash || true
-          git push
+          git pull --rebase origin main
+          git push origin HEAD:main
