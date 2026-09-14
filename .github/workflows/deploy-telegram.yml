@@ -1,0 +1,63 @@
+name: Deploy Telegram request handler
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+concurrency:
+  group: nbg-telegram-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_USER_ID: ${{ vars.TELEGRAM_USER_ID || secrets.TELEGRAM_CHAT_ID }}
+      GITHUB_DISPATCH_TOKEN: ${{ secrets.ON_DEMAND_GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Check configuration without printing values
+        run: |
+          python - <<'PY'
+          import os
+          required = ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "TELEGRAM_TOKEN",
+                      "TELEGRAM_CHAT_ID", "TELEGRAM_USER_ID", "GITHUB_DISPATCH_TOKEN"]
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit("Missing GitHub Actions settings: " + ", ".join(missing))
+          if not os.environ["TELEGRAM_USER_ID"].isdecimal():
+              raise SystemExit("Set TELEGRAM_USER_ID to your positive user ID for group chats.")
+          PY
+      - run: npm test --prefix telegram-worker
+      - id: deploy
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: telegram-worker
+          command: deploy
+          secrets: |
+            TELEGRAM_TOKEN
+            TELEGRAM_CHAT_ID
+            TELEGRAM_USER_ID
+            GITHUB_DISPATCH_TOKEN
+      - run: pip install -r requirements.txt
+      - name: Verify handler, connect webhook and install menu
+        env:
+          WORKER_URL: ${{ steps.deploy.outputs.deployment-url }}
+        run: python configure_telegram.py

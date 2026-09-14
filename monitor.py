@@ -220,6 +220,8 @@ def format_terms(item, url):
 
 
 def format_alert(e, state):
+    if e["kind"] == "request_reply":
+        return e["messages"]
     row = e["row"]
     lines = ["<b>" + LABELS[e["kind"]] + "</b>", h(row["issuer"]),
              "ISIN: " + h(row["isin"] or "not yet assigned")]
