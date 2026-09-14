@@ -1,452 +1,407 @@
-"""
-NBG public-securities monitor v4.
+"""Publication-focused NBG bond monitor. See README for semantics and limits."""
 
-Parses the full row for every entry on
-https://nbg.gov.ge/supervision/public-companies and classifies what changed:
-
-  NEW ISSUER          — an identification number never seen before
-  NEW SECURITY        — new ISIN / new prospectus for a known issuer
-  DOCUMENT REPLACED   — prospectus PDF swapped on an existing row
-  ISIN ASSIGNED       — row that had no ISIN now has one
-  REMOVED             — row disappeared from the page
-  UPDATED             — status date or website changed (low priority, digested)
-
-State: seen.json holds a full snapshot of every row, so removals and
-in-place edits are detectable. Migrates silently from older formats.
-"""
-
+import argparse
+import copy
+import hashlib
+import html
 import json
 import os
-import re
 import sys
-import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
 
-URL = "https://nbg.gov.ge/supervision/public-companies"
-STATE_FILE = Path(__file__).parent / "seen.json"
+from prospectus import HEADERS, enrich
+from registry import URL, TBILISI, SourceError, bond_counts, parse_rows
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-    ),
-    "Accept-Language": "ka,en;q=0.9",
+STATE_FILE = Path(__file__).with_name("seen.json")
+VERSION = 6
+LABELS = {
+    "prospectus_added": "NEW PROSPECTUS ADDED",
+    "documents_replaced": "PROSPECTUS DOCUMENT REPLACED",
+    "documents_removed": "DOCUMENT REMOVED FROM NBG PAGE",
+    "bond_added": "BOND ENTRY ADDED",
+    "bond_removed": "BOND ENTRY REMOVED FROM NBG PAGE",
+    "isin_assigned": "ISIN ASSIGNED",
+    "isin_changed": "ISIN UPDATED",
+    "terms_ready": "PROSPECTUS TERMS AVAILABLE",
 }
 
-TBILISI = timezone(timedelta(hours=4))  # Georgia is UTC+4 year-round, no DST
 
-
-def now_tbs() -> datetime:
+def now_tbs():
     return datetime.now(TBILISI)
 
 
-ISIN_RE = re.compile(r"GE\s?\d{10}")
-ID_RE = re.compile(r"(?<!\d)(\d{9})(?!\d)")
-DATE_RE = re.compile(r"\d{2}\.\d{2}\.\d{4}")
-PDF_RE = re.compile(r"https://nbg\.gov\.ge/fm/cm/issuers/[^\s\"'<>]+\.pdf[^\s\"'<>]*")
-SITE_RE = re.compile(r"https?://(?!nbg\.gov\.ge)[^\s\"'<>]+")
-TYPE_RE = re.compile(r"(ობლიგაცია|ჩვ\.\s*აქცია|პრ\.\s*აქცია)")
-
-# --------------------------------------------------------------------------
-
-
-def _fetch_once() -> str:
-    try:
-        r = requests.get(URL, headers=HEADERS, timeout=30)
-        r.raise_for_status()
-        if PDF_RE.search(r.text) or ISIN_RE.search(r.text):
-            return r.text
-        print(f"Table not in raw HTML ({len(r.text)} bytes), trying Playwright...")
-    except Exception as e:
-        print(f"requests failed ({e}), trying Playwright...")
-
-    from playwright.sync_api import sync_playwright
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(user_agent=HEADERS["User-Agent"])
-        page.goto(URL, wait_until="networkidle", timeout=60000)
-        html = page.content()
-        browser.close()
-    return html
-
-
-def fetch_html() -> str:
-    """Retry within the run. NBG occasionally serves a maintenance/WAF page
-    with HTTP 200 and no table — transient, not a structure change."""
-    last = ""
-    for attempt in range(3):
-        if attempt:
-            time.sleep(20)
-        try:
-            last = _fetch_once()
-        except Exception as e:
-            print(f"Attempt {attempt + 1} failed entirely: {e}")
-            continue
-        if PDF_RE.search(last) or ISIN_RE.search(last):
-            return last
-        print(f"Attempt {attempt + 1}: page had no prospectus rows.")
-    return last
-
-
-def parse_rows(html: str) -> list[dict]:
-    """Anchor on the 9-digit identification number, which every row has.
-    Everything from one ID to the next belongs to that row."""
-    text = re.sub(r'<a\s[^>]*?href="([^"]+)"[^>]*>', r" \1 ", html)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text)
-
-    # Mask ISINs so their digits can't be mistaken for ID numbers.
-    isins = {}
-
-    def _mask(m):
-        tok = f" @I{len(isins)}@ "
-        isins[tok.strip()] = m.group(0).replace(" ", "")
-        return tok
-
-    masked = ISIN_RE.sub(_mask, text)
-
-    hits = list(ID_RE.finditer(masked))
-    rows = []
-    for i, m in enumerate(hits):
-        idnum = m.group(1)
-        before = masked[hits[i - 1].end() if i else 0 : m.start()]
-        after = masked[m.end() : hits[i + 1].start() if i + 1 < len(hits) else len(masked)]
-
-        issuer = ""
-        names = re.findall(r"([ა-ჰ][ა-ჰa-zA-Z0-9\s\-\.,„“\"'()]{2,90})", before)
-        if names:
-            issuer = names[-1].strip()
-        issuer = re.sub(r"^(ვებგვერდი|Eng)\s*", "", issuer).strip(" .,-")
-
-        tm = TYPE_RE.search(after)
-        sec_type = re.sub(r"\s+", " ", tm.group(1)).strip() if tm else ""
-
-        isin = ""
-        itok = re.search(r"@I\d+@", after)
-        if itok:
-            isin = isins.get(itok.group(0), "")
-
-        pdfs = PDF_RE.findall(after)
-        pdf = pdfs[0] if pdfs else ""
-
-        dm = DATE_RE.search(after)
-        date = dm.group(0) if dm else ""
-        invalid_date = bool(re.search(r"Invalid\s*Date", after)) or not date
-
-        sites = [u for u in SITE_RE.findall(after) if ".pdf" not in u]
-        site = sites[0].rstrip(" .,") if sites else ""
-
-        rows.append({
-            "id": idnum,
-            "issuer": issuer or "(unnamed)",
-            "type": sec_type,
-            "isin": isin,
-            "pdf": pdf,
-            "pdf_key": pdf.split("?")[0],
-            "date": date,
-            "invalid_date": invalid_date,
-            "site": site,
-        })
-    return rows
-
-
-def row_key(r: dict) -> str:
-    """Stable identity for a row across page updates."""
-    if r["isin"]:
-        return "isin:" + r["isin"]
-    if r["pdf_key"]:
-        return "pdf:" + r["pdf_key"]
-    return f"row:{r['id']}:{r['type']}"
-
-
-def dedupe(rows: list[dict]) -> tuple[list[dict], int]:
-    seen, out, dropped = set(), [], 0
-    for r in rows:
-        sig = (r["id"], r["isin"], r["pdf_key"], r["type"], r["date"])
-        if sig in seen:
-            dropped += 1
-            continue
-        seen.add(sig)
-        out.append(r)
-    return out, dropped
-
-
-# --------------------------------------------------------------------------
-
-
-def load_full() -> dict:
-    if not STATE_FILE.exists():
+def load_state(path=STATE_FILE):
+    if not path.exists():
         return {}
-    try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    # Corrupt state is an error, never a silent reset that can miss publications.
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("State must be a JSON object")
+    return data
 
 
-def load_state() -> tuple[dict, int, dict]:
-    data = load_full()
-    if not data:
-        return {}, 0, {"fresh": True}
-    if isinstance(data, dict) and data.get("v") in (4, 5):
-        return data.get("rows", {}), int(data.get("fails", 0)), {"fresh": False}
-    return {}, 0, {"migrating": True, "fresh": False}
+def save_state(state, path=STATE_FILE):
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp.replace(path)
 
 
-def save_state(rows: dict, fails: int = 0, log=None, last_ok=None):
-    prev = load_full() if isinstance(load_full(), dict) else {}
-    cutoff = (now_tbs() - timedelta(days=30)).isoformat()
-    merged_log = [e for e in (prev.get("log") or []) if e.get("ts", "") >= cutoff]
-    if log:
-        merged_log.extend(log)
-    STATE_FILE.write_text(
-        json.dumps({
-            "v": 5,
-            "fails": fails,
-            "last_ok": last_ok or prev.get("last_ok", ""),
-            "rows": rows,
-            "log": merged_log,
-        }, indent=1, ensure_ascii=False),
-        encoding="utf-8",
-    )
+def new_state(rows, now):
+    return {"v": VERSION, "rows": rows, "observed_rows": rows, "last_ok": now.isoformat(),
+            "baseline_at": now.isoformat(), "fails": 0, "last_error": "",
+            "pending_removals": {}, "pending_documents": {}, "documents": {
+                url: {"status": "baseline"} for r in rows.values() for url in r["documents"]},
+            "log": [], "outbox": [], "last_digest_at": now.isoformat(),
+            "last_digest_date": "", "digest_counts": bond_counts(rows)}
 
 
-def send_telegram(msg: str):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram not configured; message:\n" + msg + "\n")
+def event(state, kind, row, now, documents=None, previous=None):
+    if row["kind"] != "bond":
         return
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": msg,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
-        timeout=30,
-    ).raise_for_status()
+    payload = {"ts": now.isoformat(), "kind": kind, "row": copy.deepcopy(row),
+               "documents": documents or [], "previous": previous or {}}
+    payload["id"] = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:24]
+    state["log"].append(payload)
+    state["outbox"].append(copy.deepcopy(payload))
+    if kind in {"prospectus_added", "documents_replaced"}:
+        for url in payload["documents"]:
+            state["documents"].setdefault(url, {"status": "pending", "row": copy.deepcopy(row)})
 
 
-# --------------------------------------------------------------------------
-
-HEADLINE = {
-    "new_issuer": "🏢 <b>NEW ISSUER — first NBG prospectus</b>",
-    "new_security": "🆕 <b>NEW SECURITY / PROSPECTUS</b>",
-    "isin_assigned": "✅ <b>ISIN ASSIGNED</b>",
-    "doc_replaced": "📄 <b>PROSPECTUS DOCUMENT REPLACED</b>",
-    "removed": "❌ <b>ENTRY REMOVED FROM NBG PAGE</b>",
-}
+def same_record(old, row):
+    if old["id"] != row["id"] or old["kind"] != row["kind"]:
+        return False
+    if old["isin"] and old["isin"] == row["isin"]:
+        return True
+    return bool(set(old["documents"]) & set(row["documents"]))
 
 
-def format_alert(kind: str, r: dict, prev: dict | None = None) -> str:
-    lines = [HEADLINE[kind], ""]
-    lines.append(f"Issuer: {r['issuer']}")
-    lines.append(f"ID: {r['id']}")
-    if r["type"]:
-        lines.append(f"Type: {r['type']}")
-    lines.append(f"ISIN: {r['isin'] or '— not yet assigned'}")
-    lines.append(f"Status date: {'⚠️ not set' if r['invalid_date'] else r['date']}")
+def reconcile(previous, rows, now):
+    """Pure state transition. Only valid independent snapshots confirm removals."""
+    if previous.get("v") != VERSION:
+        # v5 is corrupted by the previous parser. Do not compare it to repaired data.
+        state = new_state(rows, now)
+        return state, "Clean baseline saved; historical records are not new publications."
+    state = copy.deepcopy(previous)
+    old_rows = state["rows"]
+    old_count = len(state.get("observed_rows", old_rows))
+    if len(rows) < old_count * 0.8:
+        signature = hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
+        if state.get("large_drop_candidate") != signature:
+            state.update(large_drop_candidate=signature, last_error="Large change awaiting confirmation", fails=state.get("fails", 0)+1)
+            # A failure interrupts consecutive removal confirmations.
+            state["pending_removals"] = {}
+            state["pending_documents"] = {}
+            return state, "Unusually small dataset held for confirmation; previous counts retained."
+    state.pop("large_drop_candidate", None)
+    state.update(last_ok=now.isoformat(), last_error="", fails=0, observed_rows=copy.deepcopy(rows))
+    unmatched = set(old_rows)
+    matched = {}
+    # First match NBG record IDs; a website migration can recreate IDs, so allow
+    # a unique issuer+ISIN/document match without reporting removal/republication.
+    for key, row in rows.items():
+        if key in old_rows:
+            matched[key] = key
+            unmatched.discard(key)
+    for key, row in rows.items():
+        if key in matched:
+            continue
+        candidates = [k for k in unmatched if same_record(old_rows[k], row)]
+        if len(candidates) == 1:
+            matched[key] = candidates[0]
+            unmatched.remove(candidates[0])
+    accepted = {}
+    for key, row in rows.items():
+        row = copy.deepcopy(row)
+        old_key = matched.get(key)
+        old = old_rows.get(old_key) if old_key else None
+        state["pending_removals"].pop(key, None)
+        if old_key:
+            state["pending_removals"].pop(old_key, None)
+        if not old:
+            if row["kind"] == "bond":
+                new_docs = [url for url in row['documents'] if url not in state['documents']]
+                event(state, "prospectus_added" if new_docs else "bond_added", row, now, new_docs or row['documents'])
+            accepted[key] = row
+            continue
+        if old["id"] != row["id"] or old["kind"] != row["kind"]:
+            raise SourceError("An existing NBG record changed issuer/type; manual review needed")
+        if row["isin"] and row["isin"] != old["isin"]:
+            event(state, "isin_assigned" if not old["isin"] else "isin_changed", row, now,
+                  previous={"isin": old["isin"]})
+        # A temporarily blank ISIN is not a new unassigned security.
+        if not row["isin"] and old["isin"]:
+            row["isin"] = old["isin"]
+        added = sorted(set(row["documents"]) - set(old["documents"]))
+        removed = sorted(set(old["documents"]) - set(row["documents"]))
+        pending = state["pending_documents"].pop(old_key, {})
+        kept_pending = {}
+        confirmed = []
+        for url in removed:
+            count = pending.get(url, 0) + 1
+            if count >= 2:
+                confirmed.append(url)
+            else:
+                kept_pending[url] = count
+        if kept_pending:
+            state["pending_documents"][key] = kept_pending
+        if added:
+            if removed:
+                # A replacement link is immediately useful; do not also notify
+                # removal of its predecessor at the following check.
+                event(state, "documents_replaced", row, now, added, {"documents": removed})
+                state["pending_documents"].pop(key, None)
+                kept_pending = {}
+            else:
+                event(state, "prospectus_added", row, now, added)
+        elif confirmed:
+            event(state, "documents_removed", row, now, confirmed)
+        row["documents"] = sorted(set(row["documents"]) | set(kept_pending))
+        accepted[key] = row
+    for key in unmatched:
+        count = state["pending_removals"].get(key, 0) + 1
+        if count >= 2:
+            old = old_rows[key]
+            event(state, "bond_removed", old, now, old["documents"])
+            state["pending_removals"].pop(key, None)
+            state["pending_documents"].pop(key, None)
+        else:
+            state["pending_removals"][key] = count
+            accepted[key] = old_rows[key]
+    state["rows"] = accepted
+    cutoff = (now - timedelta(days=90)).isoformat()
+    # Never drop events not yet covered by a digest, even after a long outage.
+    state["log"] = [e for e in state["log"] if e["ts"] >= min(cutoff, state["last_digest_at"])]
+    return state, "Snapshot checked."
 
-    if kind == "doc_replaced" and prev:
-        lines.append(f"Previous doc: {prev.get('pdf') or '—'}")
-    if r["pdf"]:
-        lines.append(f"Prospectus: {r['pdf']}")
-    if r["site"]:
-        lines.append(f"Website: {r['site']}")
 
-    flags = []
-    if not r["isin"]:
-        flags.append("no ISIN yet — likely bookbuilding stage")
-    if r["invalid_date"]:
-        flags.append("no status date on page")
-    if flags:
-        lines += ["", "⚠️ " + "; ".join(flags)]
+def record_failure(state):
+    state["fails"] = state.get("fails", 0) + 1
+    state["last_error"] = "Latest check could not verify the NBG list"
+    state["pending_removals"] = {}
+    state["pending_documents"] = {}
+    state.pop("large_drop_candidate", None)
 
-    lines += ["", URL]
-    return "\n".join(lines)
+
+def h(value):
+    return html.escape(str(value), quote=True)
+
+
+def link(url, label="Open prospectus"):
+    return f'<a href="{h(url)}">{h(label)}</a>'
+
+
+def format_terms(item, url):
+    if item.get("status") != "ready":
+        return ["Terms: " + h(item.get("reason", "Extraction pending; the prospectus is available at the link."))]
+    terms = item["terms"]
+    lines = [h(terms["stage"])]
+    for name in ("Placement agent", "Currency and amount", "Coupon", "Tenor", "Coupon payments"):
+        value = terms["fields"].get(name)
+        if value:
+            lines.append(f"{name}: {h(value['value'])} ({link(url + '#page=' + str(value['page']), 'p. ' + str(value['page']))})")
+        else:
+            lines.append(f"{name}: not reliably extracted — review document")
+    restrictions = terms["restrictions"]
+    lines.append("Restrictions identified (review cited clauses):")
+    if restrictions:
+        for restriction in restrictions[:3]:
+            value = restriction['value']
+            if len(value) > 330:
+                value = value[:330].rsplit(' ', 1)[0] + '…'
+            lines.append("• " + h(value) + " (" + link(url + '#page=' + str(restriction['page']), 'p. ' + str(restriction['page'])) + ")")
+    else:
+        lines.append("Not reliably extracted — review eligibility, transfer and instrument conditions.")
+    lines.append(f"Automatic extraction: first {terms['pages_reviewed']} of {terms.get('total_pages', terms['pages_reviewed'])} PDF pages; restrictions are not exhaustive.")
+    return lines
+
+
+def format_alert(e, state):
+    row = e["row"]
+    lines = ["<b>" + LABELS[e["kind"]] + "</b>", h(row["issuer"]),
+             "ISIN: " + h(row["isin"] or "not yet assigned")]
+    if e["kind"] == "isin_changed":
+        lines.append("Previous ISIN: " + h(e["previous"].get("isin")))
+    if e["kind"] in {"bond_removed", "documents_removed"}:
+        lines.append("Absent on two successful checks. Removal from this page does not establish redemption or cancellation.")
+    for url in e["documents"]:
+        lines.extend(["", link(url)])
+        if e["kind"] in {"prospectus_added", "documents_replaced", "terms_ready"}:
+            lines.extend(format_terms(state["documents"].get(url, {}), url))
+    for url in e.get("previous", {}).get("documents", []):
+        lines.append(link(url, "Previous document"))
+    lines.extend(["", link(URL, "NBG securities page")])
+    return chunk_lines(lines)
+
+
+def units(text):
+    return len(text.encode("utf-16-le")) // 2
+
+
+def chunk_lines(lines, limit=3800):
+    # Split between complete HTML lines, never in the middle of an anchor/entity.
+    out, chunk = [], ""
+    for line in lines:
+        if units(line) > limit:
+            raise ValueError("One notification line exceeds Telegram limit")
+        candidate = chunk + ("\n" if chunk else "") + line
+        if units(candidate) > limit:
+            out.append(chunk)
+            chunk = line
+        else:
+            chunk = candidate
+    if chunk:
+        out.append(chunk)
+    return out
+
+
+def send_telegram(message):
+    token = os.environ.get("TELEGRAM_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError("Telegram credentials are missing; use --dry-run to preview")
+    try:
+        response = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                 json={"chat_id": chat_id, "text": message, "parse_mode": "HTML",
+                                       "disable_web_page_preview": True}, timeout=30)
+        ok = response.status_code == 200 and response.json().get("ok") is True
+    except (requests.RequestException, ValueError):
+        raise RuntimeError("Telegram delivery failed; notification retained for retry") from None
+    if not ok:
+        raise RuntimeError("Telegram rejected notification; retained for retry")
+
+
+def flush_outbox(state, path, sender=send_telegram):
+    for e in list(state["outbox"]):
+        # Freeze chunks so retrying a partially delivered message cannot reorder
+        # chunks after a later extraction succeeds.
+        e.setdefault("messages", format_alert(e, state))
+        save_state(state, path)
+        for i in range(e.get("sent_chunks", 0), len(e["messages"])):
+            sender(e["messages"][i])
+            e["sent_chunks"] = i + 1
+            save_state(state, path)
+        for url in e["documents"]:
+            if url in state["documents"]:
+                state["documents"][url]["announced"] = True
+        state["outbox"].remove(e)
+        save_state(state, path)
+
+
+def digest_messages(state, now):
+    rows = state.get("observed_rows", state["rows"])
+    counts = bond_counts(rows)
+    old_counts = state.get("digest_counts", counts)
+    delta = counts["bonds"] - old_counts["bonds"]
+    events = [e for e in state["log"] if state.get("last_digest_at", "") < e["ts"] <= now.isoformat() and e["kind"] != "terms_ready"]
+    last_ok = datetime.fromisoformat(state["last_ok"])
+    lines = ["<b>NBG DAILY BOND DIGEST</b>", now.strftime("%d %B %Y"), "",
+             f"Bond entries on the NBG page: <b>{counts['bonds']}</b> ({delta:+d} since previous digest)",
+             f"Bond issuers: {counts['issuers']}",
+             f"With ISIN: {counts['assigned']} · Awaiting ISIN: {counts['awaiting_isin']}",
+             f"Share entries excluded: {counts['shares']}", ""]
+    if events:
+        lines.append("<b>Since the previous digest</b>")
+        for kind, label in LABELS.items():
+            selected = [e for e in events if e["kind"] == kind]
+            if not selected:
+                continue
+            lines.append(f"{label.capitalize()}: {len(selected)}")
+            for e in selected:
+                lines.append("• " + h(e["row"]["issuer"]) + " — " + h(e["row"]["isin"] or "ISIN pending"))
+                for url in e["documents"]:
+                    lines.append("  " + link(url))
+    else:
+        lines.append("No bond publications, confirmed removals or ISIN updates detected since the previous digest.")
+    if state.get("pending_removals") or state.get("pending_documents"):
+        lines.append("A possible removal is awaiting the next successful check; it is not confirmed yet.")
+    if state.get("last_error") or (now-last_ok).total_seconds() > 8*3600:
+        lines.append("Latest list not verified: counts are from the last successful check.")
+    lines.extend(["", "Last successful check: " + last_ok.strftime("%d %b %H:%M") + " Tbilisi",
+                  "Counts describe NBG page entries, not all outstanding bonds in Georgia."])
+    if now.date() == datetime.fromisoformat(state["baseline_at"]).date():
+        lines.append("The corrected baseline was established today; earlier alerts are excluded.")
+    return chunk_lines(lines), counts
+
+
+def run_digest(state, now, path, dry_run=False, sender=send_telegram):
+    if state.get("v") != VERSION:
+        raise RuntimeError("Run one successful check to establish the corrected baseline before the digest")
+    if state.get("last_digest_date") == now.date().isoformat() and not dry_run:
+        print("Daily digest already delivered.")
+        return
+    if dry_run:
+        for msg in digest_messages(state, now)[0]:
+            print(msg + "\n")
+        return
+    if not state.get("pending_digest"):
+        messages, counts = digest_messages(state, now)
+        state["pending_digest"] = {"messages": messages, "counts": counts, "cutoff": now.isoformat(), "sent_chunks": 0}
+        save_state(state, path)
+    pending = state["pending_digest"]
+    for i in range(pending["sent_chunks"], len(pending["messages"])):
+        sender(pending["messages"][i])
+        pending["sent_chunks"] = i+1
+        save_state(state, path)
+    state.update(last_digest_at=pending["cutoff"], last_digest_date=now.date().isoformat(), digest_counts=pending["counts"])
+    state.pop("pending_digest")
+    save_state(state, path)
+
+
+def fetch_html():
+    # One page request per scheduled check. Do not bypass WAF/maintenance pages.
+    response = requests.get(URL, headers=HEADERS, timeout=(10, 40), allow_redirects=False)
+    response.raise_for_status()
+    if response.status_code != 200:
+        raise SourceError("NBG did not return the securities page")
+    return response.text
 
 
 def main():
-    html = fetch_html()
-    rows = parse_rows(html)
-    rows, dupes = dedupe(rows)
-
-    prev_rows, fails, meta = load_state()
-
-    if not rows:
-        fails += 1
-        print(f"No rows parsed. Consecutive failures: {fails}")
-        if fails == 3:
-            send_telegram(
-                "⚠️ NBG monitor: page unreadable for ~45 minutes (3 runs). "
-                "Structure may have changed."
-            )
-        save_state(prev_rows, fails)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--digest", action="store_true")
+    parser.add_argument("--dry-run", action="store_true", help="No messages, state writes or PDF downloads")
+    parser.add_argument("--html", type=Path, help="Read an offline NBG HTML fixture instead of the network")
+    parser.add_argument("--state", type=Path, default=STATE_FILE)
+    args = parser.parse_args()
+    state = load_state(args.state)
+    now = now_tbs()
+    if args.digest:
+        run_digest(state, now, args.state, dry_run=args.dry_run)
         return
-
-    current = {row_key(r): r for r in rows}
-    print(f"Parsed {len(current)} rows ({dupes} duplicates collapsed).")
-
-    if meta.get("fresh") or meta.get("migrating"):
-        save_state(current, 0, last_ok=now_tbs().isoformat())
-        print("Baseline saved — no alerts on first run of this version.")
+    try:
+        rows = parse_rows(args.html.read_text(encoding="utf-8") if args.html else fetch_html())
+        updated, message = reconcile(state, rows, now)
+    except (SourceError, requests.RequestException) as exc:
+        print("Check failed:", type(exc).__name__)
+        if not args.dry_run:
+            record_failure(state)
+            save_state(state, args.state)
+        raise RuntimeError("NBG list could not be verified; previous data retained") from None
+    print(message, bond_counts(rows))
+    if args.dry_run:
+        for e in updated["outbox"]:
+            for msg in format_alert(e, updated):
+                print(msg + "\n")
+        for msg in digest_messages(updated, now)[0]:
+            print(msg + "\n")
         return
-
-    known_ids = {r.get("id") for r in prev_rows.values()}
-    urgent, digest = [], []
-
-    for key, r in current.items():
-        old = prev_rows.get(key)
-        if old is None:
-            twin = next(
-                (o for o in prev_rows.values()
-                 if not o.get("isin") and o.get("pdf_key")
-                 and o["pdf_key"] == r["pdf_key"] and r["isin"]),
-                None,
-            )
-            if twin:
-                urgent.append(("isin_assigned", r, twin))
-            elif r["id"] not in known_ids:
-                urgent.append(("new_issuer", r, None))
-            else:
-                urgent.append(("new_security", r, None))
-            continue
-
-        if r["pdf_key"] and old.get("pdf_key") and r["pdf_key"] != old["pdf_key"]:
-            urgent.append(("doc_replaced", r, old))
-            continue
-
-        changed = []
-        if r["date"] != old.get("date"):
-            changed.append(f"status date {old.get('date') or '—'} → {r['date'] or '—'}")
-        if r["site"] != old.get("site"):
-            changed.append("website updated")
-        if changed:
-            digest.append(f"• {r['issuer']} ({r['isin'] or r['id']}): " + "; ".join(changed))
-
-    superseded = {t["pdf_key"] for k, t, p in
-                  [(a, b, c) for a, b, c in urgent if a == "isin_assigned" and c]
-                  for t in [p]}
-    for key, old in prev_rows.items():
-        if key not in current and old.get("pdf_key") not in superseded:
-            urgent.append(("removed", old, None))
-
-    events = []
-    ts = now_tbs().isoformat()
-    for kind, r, prev in urgent:
-        send_telegram(format_alert(kind, r, prev))
-        print(f"Alert [{kind}]: {r['issuer']} {r['isin'] or r['id']}")
-        events.append({"ts": ts, "kind": kind, "issuer": r["issuer"], "id": r["id"],
-                       "isin": r["isin"], "type": r["type"], "date": r["date"],
-                       "pdf": r["pdf"], "site": r["site"]})
-
-    if digest:
-        send_telegram("📋 <b>Minor updates on NBG page</b>\n\n" + "\n".join(digest[:20]))
-        print(f"Minor-update digest sent: {len(digest)} items.")
-        for line in digest:
-            events.append({"ts": ts, "kind": "minor", "text": line.lstrip("• ")})
-
-    save_state(current, 0, log=events, last_ok=ts)
-    if not urgent and not digest:
-        print("No changes.")
-
-
-KIND_LABEL = {
-    "new_issuer": "New issuers",
-    "new_security": "New securities",
-    "isin_assigned": "ISINs assigned",
-    "doc_replaced": "Documents replaced",
-    "removed": "Entries removed",
-}
-
-
-def daily_digest():
-    """Summarise everything logged since 00:00 Tbilisi today. Reads state
-    only — no page fetch — so it can never race the checker."""
-    data = load_full()
-    rows = data.get("rows", {}) or {}
-    log = data.get("log", []) or []
-    today = now_tbs().date()
-    todays = [e for e in log
-              if e.get("ts", "")[:10] == today.isoformat()]
-
-    header = f"📊 <b>NBG DAILY DIGEST</b>\n{today.strftime('%d %B %Y')}"
-
-    last_ok = data.get("last_ok", "")
-    if last_ok:
-        try:
-            stale_h = (now_tbs() - datetime.fromisoformat(last_ok)).total_seconds() / 3600
-            checked = datetime.fromisoformat(last_ok).strftime("%H:%M")
-            freshness = (f"Last successful check: {checked}"
-                         + (f"  ⚠️ {stale_h:.0f}h ago" if stale_h > 2 else ""))
-        except Exception:
-            freshness = "Last successful check: unknown"
-    else:
-        freshness = "Last successful check: unknown"
-
-    no_isin = sum(1 for r in rows.values() if not r.get("isin"))
-    bad_date = sum(1 for r in rows.values() if r.get("invalid_date"))
-    quality = []
-    if no_isin:
-        quality.append(f"{no_isin} entr{'y' if no_isin == 1 else 'ies'} without ISIN")
-    if bad_date:
-        quality.append(f"{bad_date} without a valid status date")
-
-    major = [e for e in todays if e.get("kind") in KIND_LABEL]
-    minor = [e for e in todays if e.get("kind") == "minor"]
-
-    if not major and not minor:
-        msg = [header, "", "✅ No new issuers, securities or document changes today.",
-               "", f"Tracking {len(rows)} entries.", freshness]
-        if quality:
-            msg += ["", "Data quality: " + "; ".join(quality)]
-        send_telegram("\n".join(msg))
-        print("Quiet-day digest sent.")
-        return
-
-    counts = {}
-    for e in major:
-        counts[e["kind"]] = counts.get(e["kind"], 0) + 1
-
-    msg = [header, "", "<b>Today's activity</b>"]
-    for k, label in KIND_LABEL.items():
-        if counts.get(k):
-            msg.append(f"{label}: {counts[k]}")
-    if minor:
-        msg.append(f"Minor updates: {len(minor)}")
-
-    for k, label in KIND_LABEL.items():
-        items = [e for e in major if e["kind"] == k]
-        if not items:
-            continue
-        msg += ["", f"<b>{label}</b>"]
-        for e in items:
-            msg.append(f"• {e['issuer']} — {e.get('type') or 'n/a'}")
-            msg.append(f"  ISIN: {e.get('isin') or '— not assigned'}"
-                       + (f"  ·  {e['date']}" if e.get("date") else ""))
-            if e.get("pdf"):
-                msg.append(f"  {e['pdf']}")
-
-    if minor:
-        msg += ["", "<b>Minor updates</b>"]
-        msg += [f"• {e['text']}" for e in minor[:10]]
-
-    if quality:
-        msg += ["", "⚠️ <b>Data quality</b>", "; ".join(quality)]
-
-    msg += ["", f"Tracking {len(rows)} entries.", freshness, "", URL]
-    send_telegram("\n".join(msg))
-    print(f"Daily digest sent: {len(major)} major, {len(minor)} minor.")
+    save_state(updated, args.state)
+    enrich(updated, now)
+    for url, item in updated["documents"].items():
+        if item.pop("followup_due", False):
+            event(updated, "terms_ready", item["row"], now, [url])
+    save_state(updated, args.state)
+    flush_outbox(updated, args.state)
 
 
 if __name__ == "__main__":
-    if "--digest" in sys.argv:
-        daily_digest()
-    else:
+    try:
         main()
+    except Exception as exc:
+        # Sanitise exceptions from HTTP libraries: bot tokens can occur in URLs.
+        print("Monitor stopped:", str(exc) if isinstance(exc, (RuntimeError, SourceError)) else type(exc).__name__)
+        sys.exit(1)
