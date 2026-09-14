@@ -68,6 +68,52 @@ python -m venv .venv
 
 The fixture is a reduced capture of the real NBG rows on 14 September 2026, with unrelated page content removed. Tests cover mapping errors, cache suffixes, blank ISIN assignment, shares, additional/replaced/removed PDFs, transient disappearance, major source shrinkage, delivery retry, digest boundaries and local term extraction.
 
+## On-demand Telegram assistant
+
+The request handler and deployment workflow are included in the repository. **Merging the code does not activate Telegram replies.** Complete the one-time setup below and run the deployment workflow; it verifies the handler, connects the existing bot and sends a welcome menu.
+
+| Ask or tap | Result | NBG traffic |
+| --- | --- | --- |
+| Overview / `/overview` / “how many bonds?” | Bond entries, issuers, assigned/pending ISINs and last check time | None |
+| Recent changes / `/changes 7` | Publications, removals and ISIN changes in the recorded period | None |
+| Find issuer / `/issuer Nikora` | Issuer selection and its bond entries | None |
+| Bond terms / `/terms GE2700605613` | Selected prospectus links and cached terms, with page references | None |
+| Digest now / `/digest` | Saved bond overview and changes in the preceding 24 hours | None |
+| Check NBG now / `/refresh` | A bounded fresh-check job; reuses a check made in the preceding 15 minutes | At most one page request |
+| Extract terms now | A bounded job for the selected record's uncached PDFs | At most two PDF attempts |
+
+Names can be searched in Georgian, by issuer identification code, or by ISIN. Common Latin aliases include Nikora, RICO, Tegeta, TBC Leasing, ALMA, MBC and Bank of Georgia. Ambiguous issuer matches get a selection menu. This is a command/search assistant with a few common English question forms; it does not call a paid language model or claim to answer arbitrary questions.
+
+Ordinary questions read the public repository's saved snapshot. GitHub/CDN caching may delay visibility of a just-completed job, and every answer shows its check time. “Digest now” does not advance the scheduled daily digest's reporting cursor. Reliable change history starts at the corrected v6 baseline. The available log is bounded by the monitor's retention policy.
+
+The small Cloudflare Worker receives Telegram webhooks; it does not keep a server polling in GitHub Actions. Only your configured chat **and user ID** are accepted. Your private chat ID is also your user ID by default. In a group, explicitly set your positive user ID so other participants cannot operate the bot. Only hashes and selected NBG record IDs go into public workflow inputs; private query text is not written to state or logs.
+
+Heavy work runs in the manual `NBG on-demand request` workflow and shares the monitor's state-writing concurrency group. Requests while another writer is running are declined with a retry message. GitHub can take a minute or longer to start; if no completion arrives, inspect the workflow and try again after it finishes. State holds delivery receipts, and retries reuse cached terms. Webhook cache deduplication is best effort; a delivery/commit crash can still duplicate a reply. The 15-minute refresh cooldown and PDF retry limits persist across requests.
+
+Existing historical PDFs remain untouched until you explicitly select **Extract terms now**. The same 20 MB, 60-page, two-attempt-per-job and three-attempts-per-document limits apply. Failed attempts are at least twelve hours apart. Scheduled checks can retry a requested PDF after a temporary failure. Unreadable/scanned text and unrecognised terms still need document review.
+
+### One-time activation
+
+No bot token needs to be pasted into chat or copied into source files. The deployment workflow reuses the existing repository secrets `TELEGRAM_TOKEN` and `TELEGRAM_CHAT_ID`.
+
+1. In your Cloudflare account, enable Workers and select a `workers.dev` subdomain. Use the Workers Free plan for this small personal handler. Review [Cloudflare's current limits](https://developers.cloudflare.com/workers/platform/limits/) if usage grows.
+2. Create a Cloudflare API token using **Edit Cloudflare Workers**, scoped to that account. Add it as the repository Actions secret **CLOUDFLARE_API_TOKEN**. Add the account ID as the Actions **variable CLOUDFLARE_ACCOUNT_ID**.
+3. Create a fine-grained GitHub token for **Get-Coped/nbg-monitor only**, with repository **Actions: read and write** (metadata read is implicit). Save it as Actions secret **ON_DEMAND_GITHUB_TOKEN**. Choose an expiry you will remember to renew; expiration prevents requested jobs but does not stop the scheduled monitor. This token lets the Worker dispatch only the repository workflows it is authorized to run.
+4. If the bot uses a group chat, add Actions **variable TELEGRAM_USER_ID** with your positive personal Telegram user ID. A private chat needs no extra variable.
+5. Open [Deploy Telegram request handler](https://github.com/Get-Coped/nbg-monitor/actions/workflows/deploy-telegram.yml), select **Run workflow** on **main**, and wait for it to succeed. The job deploys the Worker, installs its encrypted secrets, verifies authentication and then connects the webhook/menu. It sends a welcome menu on first activation.
+6. In Telegram, try `/overview`, `/issuer Nikora`, and **Extract terms now** for a selected bond. Check a requested job in [NBG on-demand request](https://github.com/Get-Coped/nbg-monitor/actions/workflows/on-demand.yml) if its reply is delayed.
+
+Settings: [Actions secrets](https://github.com/Get-Coped/nbg-monitor/settings/secrets/actions) · [Actions variables](https://github.com/Get-Coped/nbg-monitor/settings/variables/actions).
+
+After handler code changes or credential rotation, rerun the deployment workflow. No additional scheduled page checks are created. Do not enable paid plans solely to activate these features. For setup details see [Cloudflare's GitHub Actions documentation](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) and [GitHub's fine-grained token instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+
+Run the request-handler tests without a bot or Cloudflare account:
+
+```sh
+python -m pytest -q
+npm test --prefix telegram-worker
+```
+
 ## Useful next additions
 
 These are possible extensions, not enabled features:

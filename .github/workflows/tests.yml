@@ -3,7 +3,7 @@ on:
   pull_request:
   push:
     branches: [main]
-    paths: ['**.py', requirements.txt, '.github/workflows/**', 'tests/**']
+    paths: ['**.py', requirements.txt, '.github/workflows/**', 'tests/**', 'telegram-worker/**']
 permissions:
   contents: read
 jobs:
@@ -20,3 +20,12 @@ jobs:
       - run: python -m pytest -q
       - name: Offline migration preview (no messages or live website requests)
         run: python monitor.py --dry-run --html tests/fixtures/nbg-2026-09-14.html
+  telegram:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm test --prefix telegram-worker
