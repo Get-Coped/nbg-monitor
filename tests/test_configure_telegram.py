@@ -12,7 +12,7 @@ def response(data=None, code=200):
 
 def test_setup_authenticates_worker_before_changing_webhook():
     calls = []
-    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True})
+    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1})
     def post(url, json, **kwargs):
         calls.append((url,json,kwargs))
         if url == URL+"/telegram":
@@ -27,9 +27,15 @@ def test_setup_authenticates_worker_before_changing_webhook():
     webhook = next(payload for url,payload,_ in calls if url.endswith("/setWebhook"))
     assert webhook["max_connections"] == 1 and not webhook["drop_pending_updates"]
     assert not any(url.endswith("/sendMessage") for url,_,_ in calls)
+    menus = [payload for url,payload,_ in calls if url.endswith("/setMyCommands")]
+    common = next(m for m in menus if m["scope"]["type"] == "all_private_chats")
+    owner = next(m for m in menus if m["scope"]["type"] == "chat")
+    assert "stop" in {c["command"] for c in common["commands"]}
+    assert "invite" not in {c["command"] for c in common["commands"]}
+    assert "invite" in {c["command"] for c in owner["commands"]}
 
 def test_bad_worker_auth_does_not_touch_telegram():
-    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True})
+    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1})
     with patch.dict("os.environ", ENV, clear=True), patch.object(setup.requests,"get",return_value=health), patch.object(setup.requests,"post",return_value=response(code=403)) as post:
         with pytest.raises(ValueError):
             setup.configure()

@@ -1,5 +1,6 @@
 
-/** Owner-only Telegram queries. Ordinary lookups never call NBG. */
+/** Invited-user Telegram queries. Ordinary lookups never call NBG. */
+export {FriendsHub} from './hub.js';
 export const MENU = {inline_keyboard: [
   [{text:"Overview",callback_data:"overview"},{text:"Recent changes",callback_data:"changes:7"}],
   [{text:"Find issuer",callback_data:"issuer"},{text:"Bond terms",callback_data:"list:0"}],
@@ -157,12 +158,12 @@ export function authorized(update,env) {
     /^\d+$/.test(owner) && String(from.id)===owner &&
     (m.chat.type==="private" || Boolean(env.TELEGRAM_USER_ID));
 }
-async function telegram(env,method,payload,net) {
+export async function telegram(env,method,payload,net) {
   const r=await net("https://api.telegram.org/bot"+env.TELEGRAM_TOKEN+"/"+method,{
     method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload),
     signal:AbortSignal.timeout(15000)});
-  if(!r.ok)throw Error("Telegram request failed");
-  const d=await r.json();if(!d.ok)throw Error("Telegram rejected request");
+  const d=await r.json();
+  if(!r.ok || !d.ok) {const e=Error("Telegram request failed");e.code=d.error_code || r.status;e.retryAfter=d.parameters?.retry_after;throw e;}
   return d.result;
 }
 async function snapshot(env,net) {
@@ -175,7 +176,7 @@ async function snapshot(env,net) {
   if(s.v!==6 || !s.rows || !s.last_ok)throw Error("Saved data not ready");
   return s;
 }
-async function dispatch(env,job,requestId,net) {
+async function dispatch(env,job,requestId,net,hub=null,chat="") {
   if(!env.GITHUB_DISPATCH_TOKEN)return "Fresh checks and first-time PDF extraction are not configured yet. Saved lookups remain available.";
   const root="https://api.github.com/repos/"+(env.GITHUB_REPOSITORY || "Get-Coped/nbg-monitor");
   const headers={Authorization:"Bearer "+env.GITHUB_DISPATCH_TOKEN,Accept:"application/vnd.github+json","Content-Type":"application/json","User-Agent":"NBG-Telegram-Requests","X-GitHub-Api-Version":"2022-11-28"};
@@ -186,46 +187,99 @@ async function dispatch(env,job,requestId,net) {
     const runs=(await r.json()).workflow_runs || [];
     if(runs.some(r=>r.head_branch==="main" && /\/(monitor|on-demand)\.yml$/.test(r.path)))return "A monitor request is already running. Please try again shortly. Saved lookups are still available.";
   }
+  if(hub) {
+    const allowed=await hub.reserve(requestId,chat,job.mode);
+    if(!allowed.ok)return allowed.text;
+  }
   const r=await net(root+"/actions/workflows/on-demand.yml/dispatches",{method:"POST",headers,
-    body:JSON.stringify({ref:"main",inputs:{...job,request_id:requestId}}),signal:AbortSignal.timeout(10000)});
-  if(!r.ok)throw Error("Could not queue request");
+    body:JSON.stringify({ref:"main",inputs:{...job,request_id:requestId,...(hub?{private_reply:"true"}:{})}}),signal:AbortSignal.timeout(10000)});
+  if(!r.ok) {if(hub)await hub.release(requestId,true);throw Error("Could not queue request");}
   return job.mode==="refresh"?"Check requested. I’ll send the result when it finishes; GitHub may take a minute to start.":"Extraction requested. I’ll send the selected prospectus terms when ready.";
 }
-export async function handle(request,env,net=fetch,cache=globalThis.caches?.default) {
+export async function handle(request,env,net=fetch,cache=globalThis.caches?.default,hub=null) {
   const url=new URL(request.url);
   if(url.pathname==="/health" && request.method==="GET") {
     const configured=Boolean(env.TELEGRAM_TOKEN && env.TELEGRAM_CHAT_ID);
-    return Response.json({service:"nbg-telegram-requests",configured,jobs_enabled:Boolean(env.GITHUB_DISPATCH_TOKEN)},{status:configured?200:503});
+    return Response.json({service:"nbg-telegram-requests",configured,jobs_enabled:Boolean(env.GITHUB_DISPATCH_TOKEN),
+      friends_enabled:Boolean(env.FRIENDS),relay_version:env.FRIENDS?1:0},{status:configured?200:503});
   }
-  if(url.pathname!=="/telegram" || request.method!=="POST")return new Response("Not found",{status:404});
+  if(!["/telegram","/relay"].includes(url.pathname) || request.method!=="POST")return new Response("Not found",{status:404});
   if(!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID)return new Response("Not configured",{status:503});
-  const expected=await digestHex("nbg-webhook-v1:"+env.TELEGRAM_TOKEN);
-  if(request.headers.get("X-Telegram-Bot-Api-Secret-Token")!==expected)return new Response("Forbidden",{status:403});
+  const relay=url.pathname==="/relay";
+  const expected=await digestHex((relay?"nbg-relay-v1:":"nbg-webhook-v1:")+env.TELEGRAM_TOKEN);
+  if(request.headers.get(relay?"X-NBG-Relay-Secret":"X-Telegram-Bot-Api-Secret-Token")!==expected)return new Response("Forbidden",{status:403});
   if(Number(request.headers.get("Content-Length")||0)>65536)return new Response("Too large",{status:413});
+  if(env.FRIENDS && !hub) {
+    try {return await env.FRIENDS.get(env.FRIENDS.idFromName("friends-v1")).fetch(request);}
+    catch {return new Response("Temporary request failure",{status:503});}
+  }
   const raw=await request.text();if(raw.length>65536)return new Response("Too large",{status:413});
   let update;try{update=JSON.parse(raw);}catch{return new Response("Bad JSON",{status:400});}
+  if(relay) {
+    if(!hub)return new Response("Relay unavailable",{status:503});
+    try {return await hub.enqueue(update);}catch{return new Response("Temporary delivery failure",{status:503});}
+  }
   if(!Number.isSafeInteger(update.update_id))return new Response("Bad update",{status:400});
-  if(!authorized(update,env))return new Response("OK");
-  const receipt=await digestHex("nbg-update:"+env.TELEGRAM_CHAT_ID+":"+update.update_id);
-  const key=new Request("https://nbg-receipts.invalid/"+receipt);
-  try{if(cache && await cache.match(key))return new Response("OK");}catch{/* Cache outages must not block requests. */}
-  let result;
-  try {
-    if(update.callback_query) {
-      try{await telegram(env,"answerCallbackQuery",{callback_query_id:update.callback_query.id},net);}catch{/* Expired button acknowledgements must not block a reply. */}
+  const m=update.callback_query?.message ?? update.message, from=update.callback_query?.from ?? update.message?.from;
+  const isOwner=Boolean(authorized(update,env)), chat=String(m?.chat?.id ?? "");
+  const privateChat=m?.chat?.type==="private" && from && !from.is_bot && String(from.id)===chat;
+  const receipt=await digestHex("nbg-update:"+env.TELEGRAM_TOKEN+":"+env.TELEGRAM_CHAT_ID+":"+update.update_id);
+  const text=String(update.message?.text || "");
+  const start=text.match(/^\/start(?:@\w+)?(?:\s+join_([a-f0-9]{40}))?\s*$/);
+  let joined=false;
+  if(hub && privateChat && start?.[1])joined=await hub.join(start[1],chat,from.first_name);
+  if(!isOwner && !(hub && await hub.access(update))) {
+    // A friend opening an invalid/expired invite gets a useful answer, never data.
+    if(hub && privateChat && /^\/start(?:@\w+)?(?:\s|$)/.test(text)) {
+      const key="update:"+receipt;
+      if(!await hub.storage.get(key)) {
+        try {
+          await telegram(env,"sendMessage",{chat_id:chat,text:"This bot is invitation-only. Ask its owner for a new /invite link, then open it and tap Start."},net);
+          await hub.storage.put(key,{expires:Date.now()+86400000});
+        }catch{return new Response("Temporary request failure",{status:503});}
+      }
     }
-    const s=await snapshot(env,net);
-    const c=update.callback_query?.data ?? command(update.message?.text || "/help");
-    result=answer(s,String(c));
-    if(result.job)result={text:await dispatch(env,result.job,receipt.slice(0,24),net),reply_markup:MENU};
-    const parts=chunks(result.text);
-    for(let i=0;i<parts.length;i++)await telegram(env,"sendMessage",{
-      chat_id:env.TELEGRAM_CHAT_ID,text:parts[i],parse_mode:"HTML",disable_web_page_preview:true,
-      ...(i===parts.length-1?{reply_markup:result.reply_markup}:{})},net);
-    // Cache is a best-effort duplicate guard; the writer also persists request IDs.
-    try{if(cache)await cache.put(key,new Response("done",{headers:{"Cache-Control":"max-age=86400"}}));}catch{/* Delivery succeeded; do not retry just because caching failed. */}
     return new Response("OK");
-  } catch {
+  }
+  const key=new Request("https://nbg-receipts.invalid/"+receipt);
+  try{if(!hub && cache && await cache.match(key))return new Response("OK");}catch{}
+  try {
+    await hub?.clean();
+    let delivery=hub?await hub.storage.get("update:"+receipt):null;
+    if(delivery?.done)return new Response("OK");
+    if(update.callback_query) {
+      try{await telegram(env,"answerCallbackQuery",{callback_query_id:update.callback_query.id},net);}catch{}
+    }
+    if(!delivery) {
+      let c=String(update.callback_query?.data ?? command(text || "/help"));
+      const admin=text.match(/^\/(invite|friends|cancelinvites|stop)(?:@\w+)?\s*$/);
+      if(admin)c=admin[1];
+      if(start && !start[1])c="resume";
+      let result=hub?await hub.manage(c,chat,isOwner,receipt,net):null;
+      if(joined)result={text:"Welcome! You now have the bond menu, publication alerts and daily digest. Use /stop to pause notifications and /start to resume them.",reply_markup:MENU};
+      if(!result) {
+        const s=await snapshot(env,net);
+        result=answer(s,c);
+        if(result.job) {
+          // A recent check can answer everyone immediately without another Action.
+          if(hub && result.job.mode==="refresh" && Date.now()-new Date(s.last_ok)<15*60000)
+            result={text:"A check was made recently. Reusing it to avoid repeated NBG requests.\n\n"+overview(s),reply_markup:MENU};
+          else result={text:await dispatch(env,result.job,receipt.slice(0,24),net,hub,chat),reply_markup:MENU};
+        }
+      }
+      delivery={parts:chunks(result.text),reply_markup:result.reply_markup,sent:0,expires:Date.now()+7*86400000};
+      if(hub)await hub.storage.put("update:"+receipt,delivery);
+    }
+    for(let i=delivery.sent;i<delivery.parts.length;i++) {
+      await telegram(env,"sendMessage",{chat_id:chat,text:delivery.parts[i],parse_mode:"HTML",disable_web_page_preview:true,
+        ...(i===delivery.parts.length-1?{reply_markup:delivery.reply_markup}:{})},net);
+      delivery.sent=i+1;
+      if(hub)await hub.storage.put("update:"+receipt,delivery);
+    }
+    if(hub)await hub.storage.put("update:"+receipt,{done:true,expires:Date.now()+7*86400000});
+    else try{if(cache)await cache.put(key,new Response("done",{headers:{"Cache-Control":"max-age=86400"}}));}catch{}
+    return new Response("OK");
+  }catch {
     // No request bodies, tokens or private messages enter public logs.
     return new Response("Temporary request failure",{status:503});
   }

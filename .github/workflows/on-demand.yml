@@ -11,6 +11,12 @@ on:
         description: Opaque request ID (24 lowercase hex characters)
         required: true
         type: string
+      private_reply:
+        description: Route the result to the invited user who requested it
+        required: false
+        default: "false"
+        type: choice
+        options: ["false", "true"]
       row_key:
         description: Current NBG record key for terms (nbg:123)
         required: false
@@ -40,12 +46,14 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Answer the request
         env:
+          TELEGRAM_WORKER_URL: https://nbg-telegram-requests.nikakopaleishvili40.workers.dev
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PRIVATE_REPLY: ${{ inputs.private_reply || 'false' }}
           REQUEST_MODE: ${{ inputs.mode }}
           REQUEST_ID: ${{ inputs.request_id }}
           REQUEST_ROW_KEY: ${{ inputs.row_key }}
-        run: python on_demand.py --mode "$REQUEST_MODE" --request-id "$REQUEST_ID" --row-key "$REQUEST_ROW_KEY"
+        run: python on_demand.py --mode "$REQUEST_MODE" --request-id "$REQUEST_ID" --row-key "$REQUEST_ROW_KEY" --private-reply "$PRIVATE_REPLY"
       - name: Persist state and delivery receipts even after failure
         if: ${{ always() }}
         run: |

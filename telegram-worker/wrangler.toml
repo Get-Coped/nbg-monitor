@@ -9,3 +9,11 @@ GITHUB_REPOSITORY = "Get-Coped/nbg-monitor"
 
 [observability]
 enabled = false
+
+[[durable_objects.bindings]]
+name = "FRIENDS"
+class_name = "FriendsHub"
+
+[[migrations]]
+tag = "friends-v1"
+new_sqlite_classes = ["FriendsHub"]

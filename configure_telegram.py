@@ -1,4 +1,4 @@
-"""Wire the deployed owner-only Worker to the existing bot; never print secrets."""
+"""Wire the deployed invitation-based Worker to the existing bot; never print secrets."""
 import hashlib
 import os
 import sys
@@ -14,6 +14,8 @@ COMMANDS = [
     ("digest", "Get a digest now"),
     ("refresh", "Request a fresh NBG check"),
     ("menu", "Show the main menu"),
+    ("stop", "Pause alerts and the daily digest"),
+    ("start", "Resume alerts and the daily digest"),
 ]
 MENU = {"inline_keyboard": [
     [{"text":"Overview","callback_data":"overview"},{"text":"Recent changes","callback_data":"changes:7"}],
@@ -34,7 +36,7 @@ def configure():
     health = requests.get(url+"/health", timeout=20)
     health.raise_for_status()
     status = health.json()
-    if status.get("service") != "nbg-telegram-requests" or not status.get("configured") or not status.get("jobs_enabled"):
+    if status.get("service") != "nbg-telegram-requests" or not status.get("configured") or not status.get("jobs_enabled") or not status.get("friends_enabled") or status.get("relay_version") != 1:
         raise ValueError("Worker configuration is incomplete")
     secret = hashlib.sha256(("nbg-webhook-v1:"+token).encode()).hexdigest()
     probe = requests.post(url+"/telegram", json={"update_id":0},
@@ -51,8 +53,13 @@ def configure():
     api("setWebhook", {"url":url+"/telegram", "secret_token":secret,
                       "max_connections":1, "allowed_updates":["message","callback_query"],
                       "drop_pending_updates":False})
-    api("setMyCommands", {"commands":[{"command":c,"description":d} for c,d in COMMANDS],
-                         "scope":{"type":"chat","chat_id":chat_id}})
+    commands = [{"command":c,"description":d} for c,d in COMMANDS]
+    api("setMyCommands", {"commands":commands, "scope":{"type":"all_private_chats"}})
+    api("setMyCommands", {"commands":commands + [
+        {"command":"invite","description":"Create a one-use invitation for a friend"},
+        {"command":"friends","description":"View friends and remove access"},
+        {"command":"cancelinvites","description":"Cancel unused invitation links"}],
+        "scope":{"type":"chat","chat_id":chat_id}})
     if chat_id.isdecimal():
         api("setChatMenuButton", {"chat_id":chat_id, "menu_button":{"type":"commands"}})
     after = api("getWebhookInfo")

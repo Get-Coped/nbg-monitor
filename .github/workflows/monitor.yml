@@ -8,7 +8,7 @@ on:
     - cron: "0 17 * * *"
   push:
     branches: [main]
-    paths: [monitor.py, registry.py, prospectus.py, requirements.txt, .github/workflows/monitor.yml]
+    paths: [telegram_relay.py, monitor.py, registry.py, prospectus.py, requirements.txt, .github/workflows/monitor.yml]
   workflow_dispatch:
     inputs:
       mode:
@@ -42,6 +42,7 @@ jobs:
         run: pip install -r requirements.txt
       - name: Run monitor
         env:
+          TELEGRAM_WORKER_URL: https://nbg-telegram-requests.nikakopaleishvili40.workers.dev
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCHEDULE: ${{ github.event.schedule }}
