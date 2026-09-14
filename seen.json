@@ -1627,8 +1627,8 @@
   },
   "log": [],
   "outbox": [],
-  "last_digest_at": "2026-09-14T14:55:49.659799+04:00",
-  "last_digest_date": "",
+  "last_digest_at": "2026-09-15T00:43:29.351659+04:00",
+  "last_digest_date": "2026-09-15",
   "digest_counts": {
     "bonds": 47,
     "issuers": 22,
