@@ -50,6 +50,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: telegram-worker
+          wranglerVersion: "4.131.2"
           command: deploy
           secrets: |
             TELEGRAM_TOKEN

@@ -29,3 +29,8 @@ jobs:
         with:
           node-version: "22"
       - run: npm test --prefix telegram-worker
+      - name: Validate Worker deployment configuration
+        working-directory: telegram-worker
+        env:
+          WRANGLER_SEND_METRICS: "false"
+        run: npx --yes wrangler@4.131.2 deploy --dry-run --outdir /tmp/nbg-worker-build
