@@ -1348,7 +1348,7 @@
       "date": "2000-01-01"
     }
   },
-  "last_ok": "2026-09-15T06:25:51.060002+04:00",
+  "last_ok": "2026-09-15T13:29:02.792634+04:00",
   "baseline_at": "2026-09-14T14:55:49.659799+04:00",
   "fails": 0,
   "last_error": "",
@@ -1428,8 +1428,8 @@
         ],
         "date": "2026-08-10"
       },
-      "attempts": 1,
-      "last_attempt": "2026-09-14T22:49:52.344548+04:00",
+      "attempts": 2,
+      "last_attempt": "2026-09-15T13:29:02.792634+04:00",
       "reason": "PDF extraction unavailable; document review required.",
       "announced": true
     },
