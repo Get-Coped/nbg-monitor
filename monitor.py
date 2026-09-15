@@ -276,6 +276,16 @@ def send_telegram(message):
         raise RuntimeError("Telegram rejected notification; retained for retry")
 
 
+def deliver_chunk(message, key, sender, request_id=None, owner_only=False):
+    # Injected test senders retain their single-message interface.
+    if sender is not send_telegram or owner_only:
+        sender(message)
+        return
+    from telegram_relay import enqueue
+    if not enqueue(message, key, request_id):
+        send_telegram(message)
+
+
 def flush_outbox(state, path, sender=send_telegram):
     for e in list(state["outbox"]):
         # Freeze chunks so retrying a partially delivered message cannot reorder
@@ -283,7 +293,9 @@ def flush_outbox(state, path, sender=send_telegram):
         e.setdefault("messages", format_alert(e, state))
         save_state(state, path)
         for i in range(e.get("sent_chunks", 0), len(e["messages"])):
-            sender(e["messages"][i])
+            deliver_chunk(e["messages"][i], e["id"] + ":" + str(i), sender,
+                          request_id=e["id"].removeprefix("request:") if e.get("private_reply") else None,
+                          owner_only=e["kind"] == "request_reply" and not e.get("private_reply"))
             e["sent_chunks"] = i + 1
             save_state(state, path)
         for url in e["documents"]:
@@ -345,7 +357,7 @@ def run_digest(state, now, path, dry_run=False, sender=send_telegram):
         save_state(state, path)
     pending = state["pending_digest"]
     for i in range(pending["sent_chunks"], len(pending["messages"])):
-        sender(pending["messages"][i])
+        deliver_chunk(pending["messages"][i], "digest:" + pending["cutoff"] + ":" + str(i), sender)
         pending["sent_chunks"] = i+1
         save_state(state, path)
     state.update(last_digest_at=pending["cutoff"], last_digest_date=now.date().isoformat(), digest_counts=pending["counts"])

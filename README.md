@@ -86,11 +86,25 @@ Names can be searched in Georgian, by issuer identification code, or by ISIN. Co
 
 Ordinary questions read the public repository's saved snapshot. GitHub/CDN caching may delay visibility of a just-completed job, and every answer shows its check time. “Digest now” does not advance the scheduled daily digest's reporting cursor. Reliable change history starts at the corrected v6 baseline. The available log is bounded by the monitor's retention policy.
 
-The small Cloudflare Worker receives Telegram webhooks; it does not keep a server polling in GitHub Actions. Only your configured chat **and user ID** are accepted. Your private chat ID is also your user ID by default. In a group, explicitly set your positive user ID so other participants cannot operate the bot. Only hashes and selected NBG record IDs go into public workflow inputs; private query text is not written to state or logs.
+The small Cloudflare Worker receives Telegram webhooks; it does not keep a server polling in GitHub Actions. Your configured chat and user ID remain the owner. Friends join by a one-use invitation and use their own private chat. In an owner group, only the configured positive user ID can operate the bot. Only token-salted hashes, selected NBG record IDs and a private-routing flag go into public workflow inputs; recipient IDs, names, invitation tokens and private query text are kept out of the repository and logs.
 
-Heavy work runs in the manual `NBG on-demand request` workflow and shares the monitor's state-writing concurrency group. Requests while another writer is running are declined with a retry message. GitHub can take a minute or longer to start; if no completion arrives, inspect the workflow and try again after it finishes. State holds delivery receipts, and retries reuse cached terms. Webhook cache deduplication is best effort; a delivery/commit crash can still duplicate a reply. The 15-minute refresh cooldown and PDF retry limits persist across requests.
+Heavy work runs in the manual `NBG on-demand request` workflow and shares the monitor's state-writing concurrency group. Requests while another writer is running are declined with a retry message. GitHub can take a minute or longer to start; if no completion arrives, inspect the workflow and try again after it finishes. Public state holds opaque job receipts, and retries reuse cached terms. Private delivery receipts and subscribers live in a SQLite-backed Cloudflare Durable Object. An accepted relay message is durably queued; alarms send it and retry transient failures separately for each recipient. A Telegram acceptance followed by a process crash can still duplicate the last message because Telegram has no sendMessage idempotency key. The 15-minute refresh cooldown and PDF retry limits persist across requests. A shared ten-minute job reservation prevents simultaneous friend dispatches while GitHub starts up. At most 12 on-demand jobs may be submitted per Tbilisi calendar day across everyone; scheduled checks and saved lookups do not consume this allowance.
 
 Existing historical PDFs remain untouched until you explicitly select **Extract terms now**. The same 20 MB, 60-page, two-attempt-per-job and three-attempts-per-document limits apply. Failed attempts are at least twelve hours apart. Scheduled checks can retry a requested PDF after a temporary failure. Unreadable/scanned text and unrecognised terms still need document review.
+
+### Sharing with friends
+
+1. Send **/invite** to your bot and share the returned link with one friend.
+2. They open it and tap **Start**. They receive the same bond menu, publication alerts, daily digest, cached queries, requested checks and prospectus extraction.
+3. Generate a separate invitation for each friend. Invitations expire after seven days and can be claimed once. **/cancelinvites** cancels unused links.
+4. **/friends** shows members and buttons to remove their access. Only the owner can invite or remove people.
+5. Anyone can use **/stop** to pause automatic alerts and digests while retaining query access, then **/start** to resume. Blocking the bot pauses their subscription after Telegram rejects a delivery.
+
+The default limit is 50 invited friends. New members receive future notifications, not a replay of earlier alerts. Replies to requested jobs are routed to the original requester; monitor events discovered during those jobs still notify all active subscribers. Revoking membership also suppresses queued deliveries and private results.
+
+The private Durable Object is created by the Worker deployment's SQLite migration and uses the Workers Free plan. No extra API key, paid AI service, polling loop, KV namespace or subscriber list in GitHub is required. A pending alarm runs only when notifications need delivery. Private request and delivery receipts expire after 30 days; invite links after seven days. Keep observability payload logging disabled.
+
+The monitor and on-demand workflows set `TELEGRAM_WORKER_URL` to the deployed Worker origin and authenticate relay calls with a purpose-specific hash of the existing bot token. During first rollout only, a missing (404) broadcast relay falls back to owner delivery. Private results never fall back to the owner or broadcast. Other relay errors retain the public outbox for retry. A successfully queued notification advances the monitor cursor; per-recipient delivery then proceeds privately in Cloudflare. If moving or forking the deployment, update the Worker origin in both workflows.
 
 ### One-time activation
 

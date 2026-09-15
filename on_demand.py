@@ -1,4 +1,4 @@
-"""Bounded jobs requested by the owner through Telegram. No new schedule."""
+"""Bounded jobs requested by invited users through Telegram. No new schedule."""
 import argparse
 import copy
 import re
@@ -22,7 +22,7 @@ def overview(state, prefix=""):
     return lines
 
 def run_request(state, mode, request_id, row_key="", now=None, path=monitor.STATE_FILE,
-                sender=monitor.send_telegram, fetcher=fetch_terms, page_fetcher=monitor.fetch_html):
+                sender=monitor.send_telegram, fetcher=fetch_terms, page_fetcher=monitor.fetch_html, private_reply=False):
     now = now or monitor.now_tbs()
     if state.get("v") != 6:
         raise ValueError("A successful v6 baseline is required")
@@ -89,7 +89,7 @@ def run_request(state, mode, request_id, row_key="", now=None, path=monitor.STAT
             if not documents:
                 lines.append("No prospectus link is listed for this bond.")
     payload = {"id": "request:" + request_id, "kind": "request_reply",
-               "documents": documents, "messages": monitor.chunk_lines(lines)}
+               "documents": documents, "messages": monitor.chunk_lines(lines), "private_reply": private_reply}
     state["outbox"].append(payload)
     receipts[request_id] = {"status": "pending", "ts": now.isoformat()}
     cutoff = (now-timedelta(days=7)).isoformat()
@@ -107,9 +107,10 @@ if __name__ == "__main__":
     p.add_argument("--mode", choices=["overview","refresh","terms"], required=True)
     p.add_argument("--request-id", required=True)
     p.add_argument("--row-key", default="")
+    p.add_argument("--private-reply", choices=["true", "false"], default="false")
     args = p.parse_args()
     try:
-        run_request(monitor.load_state(), args.mode, args.request_id, args.row_key)
+        run_request(monitor.load_state(), args.mode, args.request_id, args.row_key, private_reply=args.private_reply == "true")
         print("On-demand request completed.")
     except Exception as exc:
         print("On-demand request failed:", type(exc).__name__)
