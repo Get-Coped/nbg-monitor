@@ -90,7 +90,7 @@ The small Cloudflare Worker receives Telegram webhooks; it does not keep a serve
 
 Heavy work runs in the manual `NBG on-demand request` workflow and shares the monitor's state-writing concurrency group. Requests while another writer is running are declined with a retry message. GitHub can take a minute or longer to start; if no completion arrives, inspect the workflow and try again after it finishes. Public state holds opaque job receipts, and retries reuse cached terms. Private delivery receipts and subscribers live in a SQLite-backed Cloudflare Durable Object. An accepted relay message is durably queued; alarms send it and retry transient failures separately for each recipient. A Telegram acceptance followed by a process crash can still duplicate the last message because Telegram has no sendMessage idempotency key. The 15-minute refresh cooldown and PDF retry limits persist across requests. A shared ten-minute job reservation prevents simultaneous friend dispatches while GitHub starts up. At most 12 on-demand jobs may be submitted per Tbilisi calendar day across everyone; scheduled checks and saved lookups do not consume this allowance.
 
-Existing historical PDFs remain untouched until you explicitly select **Extract terms now**. The same 20 MB, 60-page, two-attempt-per-job and three-attempts-per-document limits apply. Failed attempts are at least twelve hours apart. Scheduled checks can retry a requested PDF after a temporary failure. Unreadable/scanned text and unrecognised terms still need document review.
+Existing historical PDFs remain untouched until you explicitly select **Extract terms now**. The same 20 MB, 60-page, two-attempt-per-job and three-attempts-per-document limits apply. Failed attempts are at least fifteen minutes apart for preliminary entries and twelve hours apart for assigned-ISIN entries. Scheduled checks can retry a requested PDF after a temporary failure. Unreadable/scanned text and unrecognised terms still need document review.
 
 ### Sharing with friends
 
@@ -138,3 +138,14 @@ These are possible extensions, not enabled features:
 - Currency/placement-agent breakdowns based on successfully extracted and verified documents.
 
 Counts and these saved-data summaries do not inherently need an AI call. Reliable free-form summaries across unfamiliar prospectus layouts would be a separate, optional enhancement.
+
+
+## Preliminary publication comes first
+
+Use **Preliminary terms** in the Telegram menu, **/preliminary**, or **/preliminary RICO**. These select bond entries without an ISIN. No ISIN is required for extraction. Preliminary entries also appear first in issuer results and the general bond selector.
+
+The monitor treats a new public entry/document before ISIN assignment as a preliminary publication, whose indicative terms can change after bookbuilding. Prospectus approval (including programme approval), publication of offering terms, and final tranche terms are separate milestones. An ISIN assignment alert asks the reader to check the final terms; it does not invent an approval date or imply that the monitor can observe private NBG discussions. A programme ceiling is not reported as a tranche amount, and programme-wide coupon/tenor options are not presented as final tranche terms.
+
+Extracted results retain coupon ranges (including 6.5–7.0% with a single percent sign), fixed/floating status and reference-rate spreads, placement agent, issue amount/currency, tenor, coupon frequency, issue date where explicitly stated, and cited restrictions. Missing or ambiguous values remain unresolved. Combined preliminary-offering-terms/prospectus PDFs are supported within the existing 60-page limit.
+
+A preliminary download failure may be retried after 15 minutes; documents with an ISIN retain the 12-hour interval. Both keep the three-attempt-per-document limit, two PDF attempts per job and shared daily request limit. Pending preliminary extractions run before other pending PDFs. The bot explains failure reasons and the next retry time, and avoids dispatching jobs when all documents are cached, cooling down or have exhausted their attempts. No additional scheduled NBG checks are introduced.

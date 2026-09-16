@@ -19,7 +19,26 @@ MAX_PAGES = 60
 HEADERS = {"User-Agent": "NBG-Publication-Monitor/6 (+https://github.com/Get-Coped/nbg-monitor)"}
 NUMBER = r"(?:\d{1,3}(?:[, ]\d{3})+|\d{6,})"
 CURRENCY = r"აშშ\s*დოლარ\w*|ლარ(?:ი|ის|ში|ამდე)?|ევრო\w*|USD|GEL|EUR"
-PERCENT = r"\d{1,2}(?:[.,]\d+)?\s*%(?:\s*[-–—]\s*\d{1,2}(?:[.,]\d+)?\s*%)?"
+PERCENT = r"\d{1,2}(?:[.,]\d+)?\s*(?:%?\s*[-–—]\s*\d{1,2}(?:[.,]\d+)?\s*%|%)"
+
+
+def retry_seconds(row):
+    return 15 * 60 if row.get('kind') == 'bond' and not row.get('isin') else 12 * 3600
+
+
+def extraction_failure(exc):
+    if isinstance(exc, requests.Timeout):
+        return 'NBG PDF download timed out; a bounded retry is available.'
+    if isinstance(exc, requests.HTTPError):
+        code = exc.response.status_code if exc.response is not None else 'error'
+        return f'NBG PDF download returned HTTP {code}; the document link remains available.'
+    if isinstance(exc, requests.RequestException):
+        return 'NBG PDF download failed; a bounded retry is available.'
+    known = {'Response is not a PDF', 'Encrypted PDF needs manual review',
+             'PDF redirect needs review', 'PDF exceeds 20 MB extraction limit'}
+    if isinstance(exc, ValueError) and str(exc) in known:
+        return str(exc) + '.'
+    return 'PDF text could not be parsed; review the linked document.'
 
 
 def currency(value):
@@ -45,6 +64,10 @@ def extract_terms(pages):
               "note": "Automatic text extraction; missing fields need document review. Restrictions are not exhaustive."}
     fields = result["fields"]
     cover = " ".join(texts[:2])
+    # This is the document's heading, not a claim that publication is approval.
+    result['document_type'] = ('Offering terms' if re.search(r'შეთავაზების\s*პირობ|offering\s*terms|final\s*terms', cover[:500], re.I)
+                               else 'Programme prospectus' if re.search(r'(?:base|programme|program)\s*prospectus|პროგრამის\s*პროსპექტ', cover[:500], re.I)
+                               else 'Prospectus / document')
     # Use the heading, not boilerplate about an earlier preliminary prospectus.
     stage = re.search(r"წინასწარი|საბოლოო|preliminary|indicative|final", cover[:400], re.I)
     if stage and re.search(r"წინასწარი|preliminary|indicative", stage[0], re.I):
@@ -73,6 +96,11 @@ def extract_terms(pages):
             break
 
     for p, text in enumerate(texts, 1):
+        if 'Issue date' not in fields:
+            issue = re.search(r'(?:გამოშვების\s*(?:საორიენტაციო\s*)?თარიღ(?:ია|ი)|(?:indicative\s*)?issue\s*date)\s*[:—–-]?\s*'
+                              r'(\d{4}\s*წლის\s*\d{1,2}\s*[ა-ჰ]+|\d{4}-\d{2}-\d{2}|\d{1,2}[./]\d{1,2}[./]\d{4}|\d{1,2}\s+[A-Za-z]+\s+\d{4})', text, re.I)
+            if issue:
+                fields['Issue date'] = field(issue[1], p, issue[0])
         if "Placement agent" not in fields:
             anchor = re.search(r"განთავსების\s*(?:აგენტ|თანააგენტ)|placement agent|joint lead manager", text, re.I)
             if anchor:
@@ -163,6 +191,13 @@ def extract_terms(pages):
                 if excerpt not in [r["value"] for r in result["restrictions"]]:
                     result["restrictions"].append(field(value, p, excerpt))
                 break
+    if result['document_type'] == 'Programme prospectus':
+        # A programme ceiling and programme-wide options are not tranche terms.
+        if 'Currency and amount' in fields:
+            fields['Programme amount'] = fields.pop('Currency and amount')
+        for name in ('Coupon', 'Tenor', 'Coupon payments', 'Issue date'):
+            fields.pop(name, None)
+        result['note'] = 'Programme prospectus: tranche-specific terms require the separate offering-terms document.'
     return result
 
 
@@ -201,13 +236,14 @@ def fetch_terms(url):
 def enrich(state, now, fetcher=fetch_terms, limit=2):
     """Only new document URLs. A failed extraction never prevents a publication alert."""
     processed = 0
-    for url, item in state.get("documents", {}).items():
+    entries = state.get("documents", {}).items()
+    for url, item in sorted(entries, key=lambda pair: retry_seconds(pair[1].get('row', {}))):
         if item.get("status") not in {"pending", "retry"}:
             continue
         attempts = item.get("attempts", 0)
         if attempts >= 3:
             continue
-        if item.get("last_attempt") and (now - datetime.fromisoformat(item["last_attempt"])).total_seconds() < 12 * 3600:
+        if item.get("last_attempt") and (now - datetime.fromisoformat(item["last_attempt"])).total_seconds() < retry_seconds(item.get('row', {})):
             continue
         if processed >= limit:
             break
@@ -218,7 +254,7 @@ def enrich(state, now, fetcher=fetch_terms, limit=2):
         except Exception as exc:
             # Do not log response/request URLs (Telegram tokens can occur elsewhere).
             item.update(status="needs_review" if attempts+1 >= 3 else "retry",
-                        reason="PDF extraction unavailable; document review required.")
+                        reason=extraction_failure(exc))
             print("PDF extraction failed:", type(exc).__name__)
         if item.get("announced") and item.get("status") == "ready":
             # Follow-up is queued by the monitor after successful delayed extraction.
