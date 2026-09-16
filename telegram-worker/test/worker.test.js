@@ -197,3 +197,16 @@ test('preliminary cooldown gives a retry time instead of dispatching a useless j
   s.documents[pdf].attempts=3;
   assert.equal(answer(s,'extract:1',new Date(+now+86400000)).job,undefined);
 });
+
+test('preliminary terms remain accessible after final documents and ISIN replace them',()=>{
+  const s=state(),old=s.rows['nbg:1'];
+  s.documents[pdf]={...ready,sha256:'a'.repeat(64),row:structuredClone(old),terms:{...ready.terms,stage:'Preliminary / indicative'}};
+  old.isin='GE2700605621';old.documents=['https://nbg.gov.ge/fm/final.pdf'];
+  s.rows['nbg:2'].documents=[];
+  const menu=answer(s,'preliminary:0',now);
+  assert.ok(menu.reply_markup.inline_keyboard.flat().some(b=>b.callback_data==='archive:'+ 'a'.repeat(16)));
+  const result=answer(s,'preliminarysearch:Nikora',now);
+  assert.match(result.text,/Historical preliminary terms/);
+  assert.match(result.text,/Fixed 7–7.25%/);
+  assert.equal(result.job,undefined);
+});

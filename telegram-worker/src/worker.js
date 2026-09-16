@@ -111,6 +111,22 @@ export function terms(s,row,now=new Date()) {
   buttons.push([{text:"Main menu",callback_data:"menu"}]);lines.push("",freshness(s));
   return {text:lines.join("\n"),reply_markup:{inline_keyboard:buttons}};
 }
+export function preliminaryArchive(s) {
+  const current=new Set(bonds(s).flatMap(r=>r.documents));
+  return Object.entries(s.documents || {}).filter(([url,item])=>
+    !current.has(url) && item.status==="ready" && item.row?.kind==="bond" && item.sha256 &&
+    /preliminary|indicative/i.test(item.terms?.stage || ""));
+}
+export function preliminaryPage(s,page=0) {
+  const result=listRows(s,bonds(s).filter(r=>!r.isin),page,"",true);
+  const archive=preliminaryArchive(s).sort((a,b)=>(b[1].last_attempt || "").localeCompare(a[1].last_attempt || "")).slice(0,20);
+  if(archive.length) {
+    result.text+="\n\nSaved earlier preliminary terms (historical):";
+    for(const [,item] of archive)result.reply_markup.inline_keyboard.splice(-1,0,[{
+      text:"Earlier: "+short(item.row.issuer,35),callback_data:"archive:"+item.sha256.slice(0,16)}]);
+  }
+  return result;
+}
 export function command(text) {
   text=String(text ?? "").trim().slice(0,200);
   const m=text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
@@ -129,10 +145,23 @@ export function answer(s,c,now=new Date()) {
   if(s.v!==6)throw Error("Unsupported snapshot");
   const p=c.split(":");
   switch(p[0]) {
-    case "preliminary":return listRows(s,bonds(s).filter(r=>!r.isin),p[1],"",true);
+    case "preliminary":return preliminaryPage(s,p[1]);
+    case "archive":{
+      const entry=preliminaryArchive(s).find(([,item])=>item.sha256.slice(0,16)===p[1]);
+      if(!entry)return {text:"Those earlier terms are not in the saved archive.",reply_markup:MENU};
+      const [url,item]=entry,result=terms(s,{...item.row,documents:[url]},now);
+      result.text="<b>Historical preliminary terms</b>\nThese are the earlier indicative terms, not the current final terms. The original NBG link may no longer be available.\n\n"+result.text;
+      return result;
+    }
     case "preliminarysearch":{
       const rows=findRows(s,p.slice(1).join(":")).filter(r=>!r.isin);
-      return rows.length===1?terms(s,rows[0],now):listRows(s,rows,0,"",true);
+      if(rows.length===1)return terms(s,rows[0],now);
+      if(!rows.length) {
+        const q=ALIASES[norm(p.slice(1).join(":"))] ?? norm(p.slice(1).join(":"));
+        const matches=preliminaryArchive(s).filter(([,item])=>norm(item.row.issuer).includes(q));
+        if(matches.length===1)return answer(s,"archive:"+matches[0][1].sha256.slice(0,16),now);
+      }
+      return listRows(s,rows,0,"",true);
     }
     case "overview":return {text:overview(s,now),reply_markup:MENU};
     case "digest":return {text:overview(s,now)+"\n\n"+changes(s,1,now),reply_markup:MENU};
