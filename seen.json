@@ -1356,7 +1356,23 @@
   "pending_documents": {},
   "documents": {
     "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/რიკო-წინასწარი-პროსპექტი-signed.pdf": {
-      "status": "baseline"
+      "status": "retry",
+      "row": {
+        "source_id": "645",
+        "id": "205034639",
+        "issuer": "შპს მიკროსაფინანსო ორგანიზაცია რიკო ექსპრესი",
+        "type": "ობლიგაცია",
+        "kind": "bond",
+        "isin": "",
+        "documents": [
+          "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/რიკო-წინასწარი-პროსპექტი-signed.pdf"
+        ],
+        "date": ""
+      },
+      "attempts": 1,
+      "last_attempt": "2026-09-16T13:20:17.320640+04:00",
+      "reason": "PDF extraction unavailable; document review required.",
+      "announced": true
     },
     "https://nbg.gov.ge/fm/cm/issuers/დამტკიცებული_დოკუმენტები/2026/ობლიგაციების-ემისიის-პროსპექტი-nbg-final-clean-signed-usd2008.pdf": {
       "status": "ready",
@@ -1703,6 +1719,10 @@
       "4e683bf7409f8bb5a05f027d": {
         "status": "complete",
         "ts": "2026-09-15T08:13:09.897167+04:00"
+      },
+      "cf0bf7143db272c91a7d3649": {
+        "status": "complete",
+        "ts": "2026-09-16T13:20:17.320640+04:00"
       }
     }
   }
