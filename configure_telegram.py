@@ -2,11 +2,13 @@
 import hashlib
 import os
 import sys
+import time
 from urllib.parse import urlsplit
 
 import requests
 
 COMMANDS = [
+    ("preliminary", "Preliminary terms before ISIN assignment"),
     ("overview", "Bond count, issuers and pending ISINs"),
     ("changes", "Recorded changes; for example /changes 7"),
     ("issuer", "Find issuer; for example /issuer Nikora"),
@@ -18,6 +20,7 @@ COMMANDS = [
     ("start", "Resume alerts and the daily digest"),
 ]
 MENU = {"inline_keyboard": [
+    [{"text":"Preliminary terms","callback_data":"preliminary:0"}],
     [{"text":"Overview","callback_data":"overview"},{"text":"Recent changes","callback_data":"changes:7"}],
     [{"text":"Find issuer","callback_data":"issuer"},{"text":"Bond terms","callback_data":"list:0"}],
     [{"text":"Digest now","callback_data":"digest"},{"text":"Check NBG now","callback_data":"refresh"}],
@@ -33,11 +36,21 @@ def configure():
     owner = os.environ.get("TELEGRAM_USER_ID") or chat_id
     if not owner.isdecimal():
         raise ValueError("A group bot needs an explicit positive TELEGRAM_USER_ID")
-    health = requests.get(url+"/health", timeout=20)
-    health.raise_for_status()
-    status = health.json()
-    if status.get("service") != "nbg-telegram-requests" or not status.get("configured") or not status.get("jobs_enabled") or not status.get("friends_enabled") or status.get("relay_version") != 1:
-        raise ValueError("Worker configuration is incomplete")
+    # A newly published Worker can take a few seconds to reach this edge.
+    for attempt in range(8):
+        try:
+            health = requests.get(url+"/health", timeout=10)
+            health.raise_for_status()
+            status = health.json()
+            if (status.get("service") == "nbg-telegram-requests" and status.get("configured")
+                    and status.get("jobs_enabled") and status.get("friends_enabled")
+                    and status.get("relay_version") == 1 and status.get("preliminary_enabled")):
+                break
+        except (requests.RequestException, ValueError):
+            pass
+        if attempt == 7:
+            raise ValueError("Updated Worker did not become ready within the deployment check")
+        time.sleep(2)
     secret = hashlib.sha256(("nbg-webhook-v1:"+token).encode()).hexdigest()
     probe = requests.post(url+"/telegram", json={"update_id":0},
                           headers={"X-Telegram-Bot-Api-Secret-Token":secret}, timeout=20)

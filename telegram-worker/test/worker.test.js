@@ -23,7 +23,7 @@ test("counts exclude shares and include bonds without ISIN",()=>{
   const s=state(),text=overview(s,now);
   assert.equal(bonds(s).length,3);
   assert.match(text,/Bond entries: <b>3/);
-  assert.match(text,/Awaiting ISIN: 1/);
+  assert.match(text,/Preliminary \/ awaiting ISIN: 1/);
   assert.match(text,/Share entries excluded: 1/);
   s.last_error="unverified";assert.match(overview(s,now),/not verified/);
 });
@@ -64,7 +64,7 @@ test("changes exclude technical noise and terms followups",()=>{
   s.log=["website_updated","terms_ready","prospectus_added"].map(kind=>({kind,row,ts:now.toISOString(),documents:[pdf]}));
   s.log.push({kind:"bond_added",row:s.rows["nbg:4"],ts:now.toISOString()});
   const r=changes(s,7,now);
-  assert.match(r,/Prospectus added/);
+  assert.match(r,/Preliminary publication/);
   assert.doesNotMatch(r,/website_updated|terms_ready|Bond entry added/);
   assert.match(r,/Reliable history begins/);
 });
@@ -175,4 +175,25 @@ test("missing dispatch token remains an understandable saved-data service",async
   await handle(await request(update("/refresh")),env,net,null);
   assert.equal(calls.length,2);
   assert.match(JSON.parse(calls.at(-1).opts.body).text,/not configured yet/);
+});
+
+test('preliminary entries are directly selectable without an ISIN and appear first',()=>{
+  const s=state();
+  assert.equal(command('/preliminary'),'preliminary:0');
+  const selected=answer(s,command('/preliminary Nikora'),now);
+  assert.match(selected.text,/Preliminary stage/);
+  assert.equal(selected.reply_markup.inline_keyboard[0][0].callback_data,'extract:1');
+  assert.equal(answer(s,'list:0').reply_markup.inline_keyboard[0][0].callback_data,'terms:1');
+  assert.equal(answer(s,'preliminary:0').reply_markup.inline_keyboard[0][0].callback_data,'terms:1');
+});
+
+test('preliminary cooldown gives a retry time instead of dispatching a useless job',()=>{
+  const s=state();s.documents[pdf]={status:'retry',attempts:1,last_attempt:now.toISOString()};
+  const waiting=answer(s,'extract:1',new Date(+now+14*60000));
+  assert.equal(waiting.job,undefined);
+  assert.match(waiting.text,/Next extraction attempt/);
+  assert.deepEqual(answer(s,'extract:1',new Date(+now+15*60000)).job,{mode:'terms',row_key:'nbg:1'});
+  assert.equal(answer(s,'extract:2',new Date(+now+15*60000)).job,undefined);
+  s.documents[pdf].attempts=3;
+  assert.equal(answer(s,'extract:1',new Date(+now+86400000)).job,undefined);
 });

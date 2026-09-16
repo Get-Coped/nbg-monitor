@@ -190,6 +190,16 @@ def h(value):
     return html.escape(str(value), quote=True)
 
 
+def publication_title(e):
+    if e['kind'] == 'terms_ready' and not e['row'].get('isin'):
+        return 'PRELIMINARY TERMS AVAILABLE'
+    if e['kind'] in {'prospectus_added', 'documents_replaced', 'bond_added'} and not e['row'].get('isin'):
+        return 'PRELIMINARY PUBLICATION — ISIN PENDING'
+    if e['kind'] == 'isin_assigned':
+        return 'ISIN ASSIGNED — CHECK FINAL TERMS'
+    return LABELS[e['kind']]
+
+
 def link(url, label="Open prospectus"):
     return f'<a href="{h(url)}">{h(label)}</a>'
 
@@ -199,7 +209,12 @@ def format_terms(item, url):
         return ["Terms: " + h(item.get("reason", "Extraction pending; the prospectus is available at the link."))]
     terms = item["terms"]
     lines = [h(terms["stage"])]
-    for name in ("Placement agent", "Currency and amount", "Coupon", "Tenor", "Coupon payments"):
+    if terms.get("document_type") == "Programme prospectus":
+        lines.append(h(terms["note"]))
+        if terms["fields"].get("Programme amount"):
+            f = terms["fields"]["Programme amount"]
+            lines.append("Programme amount (not tranche size): " + h(f["value"]) + " (" + link(url + "#page=" + str(f["page"]), "p. " + str(f["page"])) + ")")
+    for name in ("Placement agent", "Currency and amount", "Coupon", "Tenor", "Coupon payments", "Issue date"):
         value = terms["fields"].get(name)
         if value:
             lines.append(f"{name}: {h(value['value'])} ({link(url + '#page=' + str(value['page']), 'p. ' + str(value['page']))})")
@@ -223,8 +238,12 @@ def format_alert(e, state):
     if e["kind"] == "request_reply":
         return e["messages"]
     row = e["row"]
-    lines = ["<b>" + LABELS[e["kind"]] + "</b>", h(row["issuer"]),
+    lines = ["<b>" + publication_title(e) + "</b>", h(row["issuer"]),
              "ISIN: " + h(row["isin"] or "not yet assigned")]
+    if not row['isin']:
+        lines.append('Preliminary stage: terms are indicative and may change after bookbuilding.')
+    if e['kind'] in {'prospectus_added', 'documents_replaced', 'isin_assigned'}:
+        lines.append('Publication, prospectus approval and final tranche terms are separate milestones. See the linked documents.')
     if e["kind"] == "isin_changed":
         lines.append("Previous ISIN: " + h(e["previous"].get("isin")))
     if e["kind"] in {"bond_removed", "documents_removed"}:
@@ -315,10 +334,12 @@ def digest_messages(state, now):
     lines = ["<b>NBG DAILY BOND DIGEST</b>", now.strftime("%d %B %Y"), "",
              f"Bond entries on the NBG page: <b>{counts['bonds']}</b> ({delta:+d} since previous digest)",
              f"Bond issuers: {counts['issuers']}",
-             f"With ISIN: {counts['assigned']} · Awaiting ISIN: {counts['awaiting_isin']}",
+             f"With ISIN: {counts['assigned']} · Preliminary / awaiting ISIN: {counts['awaiting_isin']}",
              f"Share entries excluded: {counts['shares']}", ""]
     if events:
         lines.append("<b>Since the previous digest</b>")
+        preliminary = [e for e in events if e['kind'] in {'prospectus_added', 'documents_replaced', 'bond_added'} and not e['row'].get('isin')]
+        lines.append(f"Preliminary publications (ISIN pending): {len(preliminary)}")
         for kind, label in LABELS.items():
             selected = [e for e in events if e["kind"] == kind]
             if not selected:

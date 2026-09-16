@@ -2,6 +2,7 @@
 /** Invited-user Telegram queries. Ordinary lookups never call NBG. */
 export {FriendsHub} from './hub.js';
 export const MENU = {inline_keyboard: [
+  [{text:"Preliminary terms",callback_data:"preliminary:0"}],
   [{text:"Overview",callback_data:"overview"},{text:"Recent changes",callback_data:"changes:7"}],
   [{text:"Find issuer",callback_data:"issuer"},{text:"Bond terms",callback_data:"list:0"}],
   [{text:"Digest now",callback_data:"digest"},{text:"Check NBG now",callback_data:"refresh"}]
@@ -23,7 +24,7 @@ export function overview(s,now=new Date()) {
   const r=bonds(s), shares=Object.values(s.observed_rows ?? s.rows).filter(r=>r.kind==="share").length;
   return ["<b>NBG bond overview</b>","Bond entries: <b>"+r.length+"</b>",
     "Issuers: "+new Set(r.map(r=>r.id)).size,"With ISIN: "+r.filter(r=>r.isin).length,
-    "Awaiting ISIN: "+r.filter(r=>!r.isin).length,"Share entries excluded: "+shares,
+    "Preliminary / awaiting ISIN: "+r.filter(r=>!r.isin).length,"Share entries excluded: "+shares,
     "",freshness(s,now),"Counts describe the NBG page, not all outstanding bonds in Georgia."].join("\n");
 }
 const LABELS={prospectus_added:"Prospectus added",documents_replaced:"Document replaced",documents_removed:"Document removed",bond_added:"Bond entry added",bond_removed:"Bond entry removed",isin_assigned:"ISIN assigned",isin_changed:"ISIN updated"};
@@ -35,7 +36,7 @@ export function changes(s,days=7,now=new Date()) {
   if(baseline>cutoff)lines.push("Reliable history begins at the corrected baseline; earlier changes are unavailable.");
   if(!events.length)lines.push("No bond changes recorded in the available period.");
   for(const e of events.slice(-30).reverse()) {
-    lines.push("• "+LABELS[e.kind]+": "+esc(e.row.issuer)+" — "+esc(e.row.isin || "ISIN pending"));
+    lines.push("• "+(!e.row.isin && ["prospectus_added","documents_replaced","bond_added"].includes(e.kind)?"Preliminary publication — ISIN pending":LABELS[e.kind])+": "+esc(e.row.issuer)+" — "+esc(e.row.isin || "ISIN pending"));
     for(const u of e.documents ?? [])lines.push(link(u));
   }
   if(events.length>30)lines.push("Showing the latest 30 of "+events.length+" events. Choose a shorter period.");
@@ -51,16 +52,16 @@ export function findRows(s,query) {
   const isin=q.replaceAll(" ","").toUpperCase();
   return bonds(s).filter(r=>r.id===q || r.source_id===q || "nbg:"+r.source_id===q || (r.isin && r.isin===isin) || norm(r.issuer).includes(q));
 }
-export function listRows(s,rows=bonds(s),page=0,issuerId="") {
-  rows=[...rows].sort((a,b)=>(b.date ?? "").localeCompare(a.date ?? "") || Number(b.source_id)-Number(a.source_id));
+export function listRows(s,rows=bonds(s),page=0,issuerId="",preliminary=false) {
+  rows=[...rows].sort((a,b)=>Number(Boolean(a.isin))-Number(Boolean(b.isin)) || (b.date ?? "").localeCompare(a.date ?? "") || Number(b.source_id)-Number(a.source_id));
   const last=Math.max(0,Math.ceil(rows.length/6)-1);
   page=Math.max(0,Math.min(last,parseInt(page)||0));
-  const selected=rows.slice(page*6,page*6+6), buttons=[], lines=["<b>Select a bond</b> — "+rows.length+" entries"];
+  const selected=rows.slice(page*6,page*6+6), buttons=[], lines=[(preliminary?"<b>Preliminary terms — ISIN pending</b>":"<b>Select a bond</b>")+" — "+rows.length+" entries"];
   for(const r of selected) {
     lines.push("• "+esc(r.issuer)+"\n  "+esc(r.isin || "ISIN pending")+(r.date?" · "+esc(r.date):""));
     buttons.push([{text:short(r.issuer,24)+" · "+(r.isin || "pending"),callback_data:"terms:"+r.source_id}]);
   }
-  const nav=[],prefix=issuerId?"issuerid:"+issuerId+":":"list:";
+  const nav=[],prefix=preliminary?"preliminary:":issuerId?"issuerid:"+issuerId+":":"list:";
   if(page>0)nav.push({text:"← Previous",callback_data:prefix+(page-1)});
   if(page<last)nav.push({text:"Next →",callback_data:prefix+(page+1)});
   if(nav.length)buttons.push(nav);
@@ -74,14 +75,29 @@ export function issuerResult(s,query) {
   if(ids.length===1)return listRows(s,rows,0,ids[0]);
   return {text:"<b>Choose the issuer</b>\nSeveral issuers match your search.",reply_markup:{inline_keyboard:ids.slice(0,20).map(id=>[{text:short(rows.find(r=>r.id===id).issuer,45),callback_data:"issuerid:"+id+":0"}])}};
 }
-export function terms(s,row) {
+export function extractionEligible(item,row,now=new Date()) {
+  return item?.status!=="ready" && (item?.attempts || 0)<3 && (!item?.last_attempt || now-new Date(item.last_attempt)>=(row.isin?12*3600000:15*60000));
+}
+export function terms(s,row,now=new Date()) {
   const lines=["<b>"+esc(row.issuer)+"</b>","ISIN: "+esc(row.isin || "not yet assigned")], buttons=[];
+  if(!row.isin)lines.push("Preliminary stage: indicative terms may change after bookbuilding. No ISIN is required to request extraction.");
   let missing=false;
   for(const u of row.documents) {
     const item=s.documents?.[u];lines.push("",link(u));
-    if(item?.status!=="ready"){missing=true;lines.push(esc(item?.reason || "Terms have not been extracted yet."));continue;}
+    if(item?.status!=="ready"){
+      missing ||= extractionEligible(item,row,now);
+      lines.push(esc(item?.reason || "Terms have not been extracted yet."));
+      if((item?.attempts || 0)>=3)lines.push("Three extraction attempts used. Please review the linked document.");
+      else if(!extractionEligible(item,row,now)) {
+        const retryAt=new Date(+new Date(item.last_attempt)+(row.isin?12*3600000:15*60000));
+        lines.push("Next extraction attempt: "+new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Tbilisi",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit",hour12:false}).format(retryAt)+" Tbilisi.");
+      }
+      continue;
+    }
     const t=item.terms;lines.push(esc(t.stage));
-    for(const name of ["Placement agent","Currency and amount","Coupon","Tenor","Coupon payments"]) {
+    if(t.document_type==="Programme prospectus")lines.push(esc(t.note));
+    if(t.fields?.["Programme amount"]) {const f=t.fields["Programme amount"];lines.push("Programme amount (not tranche size): "+esc(f.value)+" ("+link(u+"#page="+f.page,"p. "+f.page)+")");}
+    for(const name of ["Placement agent","Currency and amount","Coupon","Tenor","Coupon payments","Issue date"]) {
       const f=t.fields?.[name];
       lines.push(name+": "+(f?esc(f.value)+" ("+link(u+"#page="+f.page,"p. "+f.page)+")":"not reliably extracted — review document"));
     }
@@ -91,7 +107,7 @@ export function terms(s,row) {
     lines.push("Automatic extraction: first "+t.pages_reviewed+" of "+(t.total_pages ?? t.pages_reviewed)+" pages; restrictions are not exhaustive.");
   }
   if(!row.documents.length)lines.push("No prospectus link is listed for this bond.");
-  if(missing)buttons.push([{text:"Extract terms now",callback_data:"extract:"+row.source_id}]);
+  if(missing)buttons.push([{text:row.isin?"Extract terms now":"Extract preliminary terms",callback_data:"extract:"+row.source_id}]);
   buttons.push([{text:"Main menu",callback_data:"menu"}]);lines.push("",freshness(s));
   return {text:lines.join("\n"),reply_markup:{inline_keyboard:buttons}};
 }
@@ -100,8 +116,9 @@ export function command(text) {
   const m=text.match(/^\/(\w+)(?:@\w+)?(?:\s+([\s\S]*))?$/);
   if(m) {
     const c=m[1].toLowerCase(),arg=m[2] ?? "";
-    return {start:"menu",help:"menu",menu:"menu",overview:"overview",bonds:"overview",digest:"digest",changes:"changes:"+(arg || "7"),issuer:"search:"+arg,terms:"termsearch:"+arg,refresh:"refresh"}[c] ?? "help";
+    return {preliminary:arg?"preliminarysearch:"+arg:"preliminary:0",start:"menu",help:"menu",menu:"menu",overview:"overview",bonds:"overview",digest:"digest",changes:"changes:"+(arg || "7"),issuer:"search:"+arg,terms:"termsearch:"+arg,refresh:"refresh"}[c] ?? "help";
   }
+  if(/^(?:show )?(?:preliminary|indicative)(?: terms| bonds| prospectuses)?$/i.test(text))return "preliminary:0";
   if(/^(overview|how many bonds\??|bond count)$/i.test(text))return "overview";
   if(/^(digest|send (me )?(the )?digest)$/i.test(text))return "digest";
   if(/^(what changed this week\??|recent changes)$/i.test(text))return "changes:7";
@@ -112,6 +129,11 @@ export function answer(s,c,now=new Date()) {
   if(s.v!==6)throw Error("Unsupported snapshot");
   const p=c.split(":");
   switch(p[0]) {
+    case "preliminary":return listRows(s,bonds(s).filter(r=>!r.isin),p[1],"",true);
+    case "preliminarysearch":{
+      const rows=findRows(s,p.slice(1).join(":")).filter(r=>!r.isin);
+      return rows.length===1?terms(s,rows[0],now):listRows(s,rows,0,"",true);
+    }
     case "overview":return {text:overview(s,now),reply_markup:MENU};
     case "digest":return {text:overview(s,now)+"\n\n"+changes(s,1,now),reply_markup:MENU};
     case "changes":return {text:changes(s,p[1],now),reply_markup:MENU};
@@ -131,10 +153,10 @@ export function answer(s,c,now=new Date()) {
     case "extract":{
       const r=bonds(s).find(r=>r.source_id===p[1]);
       if(!r?.documents.length)return {text:"No current prospectus found for that entry.",reply_markup:MENU};
-      if(r.documents.every(u=>s.documents?.[u]?.status==="ready"))return terms(s,r);
+      if(!r.documents.some(u=>extractionEligible(s.documents?.[u],r,now)))return terms(s,r,now);
       return {job:{mode:"terms",row_key:"nbg:"+r.source_id}};
     }
-    default:return {text:"<b>NBG bond assistant</b>\nUse the buttons, /issuer Nikora, /terms GE2700605373, or /changes 7.\n\nOrdinary lookups use saved data. Check NBG now requests a fresh check. Extract terms now downloads the selected prospectus.",reply_markup:MENU};
+    default:return {text:"<b>NBG bond assistant</b>\nUse /preliminary or /preliminary RICO for indicative terms before ISIN assignment. Use the buttons, /issuer Nikora, /terms GE2700605373, or /changes 7.\n\nOrdinary lookups use saved data. Check NBG now requests a fresh check. Extract terms now downloads the selected prospectus.",reply_markup:MENU};
   }
 }
 export function chunks(text,limit=3800) {
@@ -201,7 +223,7 @@ export async function handle(request,env,net=fetch,cache=globalThis.caches?.defa
   if(url.pathname==="/health" && request.method==="GET") {
     const configured=Boolean(env.TELEGRAM_TOKEN && env.TELEGRAM_CHAT_ID);
     return Response.json({service:"nbg-telegram-requests",configured,jobs_enabled:Boolean(env.GITHUB_DISPATCH_TOKEN),
-      friends_enabled:Boolean(env.FRIENDS),relay_version:env.FRIENDS?1:0},{status:configured?200:503});
+      preliminary_enabled:true,friends_enabled:Boolean(env.FRIENDS),relay_version:env.FRIENDS?1:0},{status:configured?200:503});
   }
   if(!["/telegram","/relay"].includes(url.pathname) || request.method!=="POST")return new Response("Not found",{status:404});
   if(!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID)return new Response("Not configured",{status:503});

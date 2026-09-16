@@ -6,7 +6,7 @@ import sys
 from datetime import datetime, timedelta
 
 import monitor
-from prospectus import fetch_terms
+from prospectus import fetch_terms, retry_seconds, extraction_failure
 from registry import bond_counts
 
 def overview(state, prefix=""):
@@ -65,7 +65,7 @@ def run_request(state, mode, request_id, row_key="", now=None, path=monitor.STAT
         if not row or row["kind"] != "bond":
             lines = ["That bond is no longer in the saved list. Please select a current entry."]
         else:
-            lines = ["<b>Requested prospectus terms</b>", monitor.h(row["issuer"]),
+            lines = ["<b>Requested preliminary terms</b>" if not row['isin'] else "<b>Requested document terms</b>", monitor.h(row["issuer"]),
                      "ISIN: " + monitor.h(row["isin"] or "not yet assigned")]
             documents = row["documents"]
             attempts = 0
@@ -74,16 +74,22 @@ def run_request(state, mode, request_id, row_key="", now=None, path=monitor.STAT
                 item.setdefault("row", copy.deepcopy(row))
                 recent = item.get("last_attempt")
                 eligible = (item["status"] != "ready" and item.get("attempts",0) < 3 and
-                            (not recent or (now-datetime.fromisoformat(recent)).total_seconds() >= 12*3600))
+                            (not recent or (now-datetime.fromisoformat(recent)).total_seconds() >= retry_seconds(row)))
                 if eligible and attempts < 2:
                     attempts += 1
                     item.update(status="retry", attempts=item.get("attempts",0)+1, last_attempt=now.isoformat())
                     monitor.save_state(state, path)
                     try:
                         item.update(fetcher(url))
-                    except Exception:
+                    except Exception as exc:
                         item.update(status="needs_review" if item["attempts"] >= 3 else "retry",
-                                    reason="PDF extraction unavailable; document review required.")
+                                    reason=extraction_failure(exc))
+                if item['status'] != 'ready':
+                    if item.get('attempts', 0) >= 3:
+                        lines.append('Three extraction attempts used. Please review the linked document.')
+                    elif item.get('last_attempt'):
+                        retry_at = datetime.fromisoformat(item['last_attempt']) + timedelta(seconds=retry_seconds(row))
+                        lines.append('Next extraction attempt available: ' + retry_at.strftime('%d %b %H:%M') + ' Tbilisi.')
                 lines.extend(["", monitor.link(url)])
                 lines.extend(monitor.format_terms(item, url))
             if not documents:

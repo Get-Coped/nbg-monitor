@@ -87,3 +87,31 @@ def test_final_terms_heading_not_overruled_by_preliminary_boilerplate():
 def test_preliminary_title_not_overruled_by_reference_to_future_final_terms():
     result=prospectus.extract_terms(['ობლიგაციების წინასწარი შეთავაზების პირობების დოკუმენტი. საბოლოო პირობების დოკუმენტი წარედგინება მოგვიანებით.'])
     assert result['stage'] == 'Preliminary / indicative'
+
+
+def test_single_percent_sign_preserves_indicative_range_and_issue_date():
+    result = prospectus.extract_terms(['Preliminary offering terms. Fixed coupon rate 6.5–7.0%. Indicative issue date: 17 September 2026.'])
+    assert result['fields']['Coupon']['value'] == 'Fixed: 6.5–7.0%'
+    assert result['fields']['Issue date']['value'] == '17 September 2026'
+    assert result['document_type'] == 'Offering terms'
+
+
+def test_programme_ceiling_is_not_reported_as_tranche_amount():
+    result = prospectus.extract_terms(['Programme prospectus. 50,000,000 USD aggregate nominal amount. Fixed coupon rate 7%.'])
+    assert 'Currency and amount' not in result['fields']
+    assert 'Coupon' not in result['fields']
+    assert result['fields']['Programme amount']['value'] == 'USD 50,000,000'
+
+
+def test_preliminary_retries_get_priority_but_keep_global_budget():
+    state = {'documents': {}}
+    for url, row in [('final', {'kind':'bond','isin':'GE1234567890'}), ('preliminary', {'kind':'bond','isin':''})]:
+        state['documents'][url] = {'status':'retry', 'attempts':1, 'last_attempt':NOW.isoformat(), 'row':row}
+    calls=[]
+    def fetch(url):
+        calls.append(url)
+        return {'status':'ready','terms':{}}
+    assert prospectus.enrich(state,NOW+timedelta(minutes=14),fetcher=fetch,limit=1) == 0
+    assert prospectus.enrich(state,NOW+timedelta(minutes=15),fetcher=fetch,limit=1) == 1
+    assert calls == ['preliminary']
+    assert state['documents']['final']['attempts'] == 1
