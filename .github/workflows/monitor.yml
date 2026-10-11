@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: nbg-monitor
@@ -47,8 +48,27 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SCHEDULE: ${{ github.event.schedule }}
           MODE: ${{ inputs.mode }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "$SCHEDULE" = "0 17 * * *" ] || [ "$MODE" = "digest" ]; then
+          if [ "$SCHEDULE" = "0 17 * * *" ]; then
+            # Anchor to workflow creation, so waiting for a runner or rerunning
+            # tomorrow cannot change which daily slot this run belongs to.
+            python - <<'PY'
+          import os
+          import subprocess
+          from datetime import datetime
+          import requests
+          from monitor import scheduled_digest_date
+
+          response = requests.get(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"},
+              timeout=30)
+          response.raise_for_status()
+          created = datetime.fromisoformat(response.json()["created_at"].replace("Z", "+00:00"))
+          subprocess.run(["python", "monitor.py", "--digest", "--digest-date", scheduled_digest_date(created)], check=True)
+          PY
+          elif [ "$MODE" = "digest" ]; then
             python monitor.py --digest
           else
             python monitor.py
