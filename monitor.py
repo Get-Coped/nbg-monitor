@@ -7,7 +7,7 @@ import html
 import json
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import requests
@@ -324,14 +324,22 @@ def flush_outbox(state, path, sender=send_telegram):
         save_state(state, path)
 
 
-def digest_messages(state, now):
+def scheduled_digest_date(now):
+    """Date of the latest 21:00 Tbilisi slot at workflow creation time."""
+    local = now.astimezone(TBILISI)
+    slot = local.replace(hour=21, minute=0, second=0, microsecond=0)
+    return (slot - timedelta(days=local < slot)).date().isoformat()
+
+
+def digest_messages(state, now, reporting_date=None):
     rows = state.get("observed_rows", state["rows"])
     counts = bond_counts(rows)
     old_counts = state.get("digest_counts", counts)
     delta = counts["bonds"] - old_counts["bonds"]
     events = [e for e in state["log"] if state.get("last_digest_at", "") < e["ts"] <= now.isoformat() and e["kind"] != "terms_ready"]
     last_ok = datetime.fromisoformat(state["last_ok"])
-    lines = ["<b>NBG DAILY BOND DIGEST</b>", now.strftime("%d %B %Y"), "",
+    label_date = date.fromisoformat(reporting_date) if reporting_date else now.date()
+    lines = ["<b>NBG DAILY BOND DIGEST</b>", label_date.strftime("%d %B %Y"), "",
              f"Bond entries on the NBG page: <b>{counts['bonds']}</b> ({delta:+d} since previous digest)",
              f"Bond issuers: {counts['issuers']}",
              f"With ISIN: {counts['assigned']} · Preliminary / awaiting ISIN: {counts['awaiting_isin']}",
@@ -362,28 +370,40 @@ def digest_messages(state, now):
     return chunk_lines(lines), counts
 
 
-def run_digest(state, now, path, dry_run=False, sender=send_telegram):
+def run_digest(state, now, path, dry_run=False, sender=send_telegram, reporting_date=None):
     if state.get("v") != VERSION:
         raise RuntimeError("Run one successful check to establish the corrected baseline before the digest")
-    if state.get("last_digest_date") == now.date().isoformat() and not dry_run:
+    reporting_date = date.fromisoformat(reporting_date).isoformat() if reporting_date else now.date().isoformat()
+    last_date = state.get("last_digest_date", "")
+    # Older versions saved the execution date. Recover the scheduled date from
+    # the saved cutoff so an existing after-midnight digest cannot block tonight.
+    if last_date and not state.get("digest_date_version"):
+        last_date = scheduled_digest_date(datetime.fromisoformat(state["last_digest_at"]))
+    if last_date >= reporting_date and not state.get("pending_digest") and not dry_run:
         print("Daily digest already delivered.")
         return
     if dry_run:
-        for msg in digest_messages(state, now)[0]:
+        for msg in digest_messages(state, now, reporting_date)[0]:
             print(msg + "\n")
         return
     if not state.get("pending_digest"):
-        messages, counts = digest_messages(state, now)
-        state["pending_digest"] = {"messages": messages, "counts": counts, "cutoff": now.isoformat(), "sent_chunks": 0}
+        messages, counts = digest_messages(state, now, reporting_date)
+        state["pending_digest"] = {"messages": messages, "counts": counts, "cutoff": now.isoformat(), "sent_chunks": 0,
+                                   "reporting_date": reporting_date}
         save_state(state, path)
     pending = state["pending_digest"]
     for i in range(pending["sent_chunks"], len(pending["messages"])):
         deliver_chunk(pending["messages"][i], "digest:" + pending["cutoff"] + ":" + str(i), sender)
         pending["sent_chunks"] = i+1
         save_state(state, path)
-    state.update(last_digest_at=pending["cutoff"], last_digest_date=now.date().isoformat(), digest_counts=pending["counts"])
+    completed_date = pending.get("reporting_date") or scheduled_digest_date(datetime.fromisoformat(pending["cutoff"]))
+    state.update(last_digest_at=pending["cutoff"], last_digest_date=completed_date,
+                 digest_date_version=1, digest_counts=pending["counts"])
     state.pop("pending_digest")
     save_state(state, path)
+    if completed_date < reporting_date:
+        # Finish an older queued digest before sending the current day's one.
+        run_digest(state, now, path, sender=sender, reporting_date=reporting_date)
 
 
 def fetch_html():
@@ -398,6 +418,7 @@ def fetch_html():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--digest", action="store_true")
+    parser.add_argument("--digest-date", help="Intended digest date (YYYY-MM-DD); retries retain the queued date")
     parser.add_argument("--dry-run", action="store_true", help="No messages, state writes or PDF downloads")
     parser.add_argument("--html", type=Path, help="Read an offline NBG HTML fixture instead of the network")
     parser.add_argument("--state", type=Path, default=STATE_FILE)
@@ -405,7 +426,7 @@ def main():
     state = load_state(args.state)
     now = now_tbs()
     if args.digest:
-        run_digest(state, now, args.state, dry_run=args.dry_run)
+        run_digest(state, now, args.state, dry_run=args.dry_run, reporting_date=args.digest_date)
         return
     try:
         rows = parse_rows(args.html.read_text(encoding="utf-8") if args.html else fetch_html())
