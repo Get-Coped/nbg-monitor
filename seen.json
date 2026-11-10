@@ -2193,13 +2193,13 @@
     }
   ],
   "outbox": [],
-  "last_digest_at": "2026-11-10T04:31:58.474094+04:00",
-  "last_digest_date": "2026-11-10",
+  "last_digest_at": "2026-11-11T02:08:02.173164+04:00",
+  "last_digest_date": "2026-11-11",
   "digest_counts": {
-    "bonds": 48,
+    "bonds": 49,
     "issuers": 22,
     "assigned": 47,
-    "awaiting_isin": 1,
+    "awaiting_isin": 2,
     "shares": 10
   },
   "on_demand": {
