@@ -1398,8 +1398,8 @@
   },
   "last_ok": "2026-11-11T23:35:47.339606+04:00",
   "baseline_at": "2026-09-14T14:55:49.659799+04:00",
-  "fails": 0,
-  "last_error": "",
+  "fails": 1,
+  "last_error": "Latest check could not verify the NBG list",
   "pending_removals": {},
   "pending_documents": {},
   "documents": {
