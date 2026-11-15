@@ -223,6 +223,75 @@ def test_digest_is_offline_and_excludes_shares(tmp_path):
     assert 'Minor updates' not in ''.join(msgs)
 
 
+def test_delayed_digest_does_not_consume_next_evening_slot(tmp_path):
+    state = baseline()
+    path = tmp_path/'state.json'
+    sent = []
+    delayed = datetime(2026, 10, 1, 1, 12, tzinfo=TBILISI)
+    reporting_date = monitor.scheduled_digest_date(delayed)
+    assert reporting_date == '2026-09-30'
+    monitor.run_digest(state, delayed, path, sender=sent.append, reporting_date=reporting_date)
+    assert state['last_digest_date'] == '2026-09-30'
+    assert '30 September 2026' in sent[0]
+    evening = datetime(2026, 10, 1, 21, tzinfo=TBILISI)
+    monitor.run_digest(state, evening, path, sender=sent.append,
+                       reporting_date=monitor.scheduled_digest_date(evening))
+    assert len(sent) == 2
+    assert state['last_digest_date'] == '2026-10-01'
+    monitor.run_digest(state, evening, path, sender=sent.append, reporting_date='2026-10-01')
+    # Rerunning an older workflow also must not regress the date or send twice.
+    monitor.run_digest(state, evening, path, sender=sent.append, reporting_date='2026-09-30')
+    assert len(sent) == 2
+
+
+def test_existing_after_midnight_state_allows_tonights_digest(tmp_path):
+    state = baseline()
+    state.update(last_digest_at='2026-10-01T01:12:11.321946+04:00', last_digest_date='2026-10-01')
+    sent = []
+    monitor.run_digest(state, datetime(2026, 10, 1, 21, tzinfo=TBILISI), tmp_path/'state.json',
+                       sender=sent.append, reporting_date='2026-10-01')
+    assert len(sent) == 1
+    assert state['digest_date_version'] == 1
+
+
+def test_pending_digest_keeps_reporting_date_across_midnight_retry(tmp_path):
+    state = baseline()
+    path = tmp_path/'state.json'
+    evening = datetime(2026, 9, 30, 21, tzinfo=TBILISI)
+    with pytest.raises(RuntimeError):
+        monitor.run_digest(state, evening, path, sender=Mock(side_effect=RuntimeError('failed')),
+                           reporting_date='2026-09-30')
+    state = monitor.load_state(path)
+    sent = []
+    monitor.run_digest(state, datetime(2026, 10, 1, 1, tzinfo=TBILISI), path,
+                       sender=sent.append, reporting_date='2026-09-30')
+    assert state['last_digest_date'] == '2026-09-30'
+    assert '30 September 2026' in sent[0]
+    assert 'pending_digest' not in state
+    monitor.run_digest(state, datetime(2026, 10, 1, 21, tzinfo=TBILISI), path,
+                       sender=sent.append, reporting_date='2026-10-01')
+    assert len(sent) == 2
+
+
+def test_current_slot_finishes_older_pending_digest_then_sends_current(tmp_path):
+    state = baseline()
+    path = tmp_path/'state.json'
+    with pytest.raises(RuntimeError):
+        monitor.run_digest(state, datetime(2026, 9, 30, 21, tzinfo=TBILISI), path,
+                           sender=Mock(side_effect=RuntimeError('failed')), reporting_date='2026-09-30')
+    sent = []
+    monitor.run_digest(state, datetime(2026, 10, 1, 21, tzinfo=TBILISI), path,
+                       sender=sent.append, reporting_date='2026-10-01')
+    assert len(sent) == 2
+    assert '30 September 2026' in sent[0] and '01 October 2026' in sent[1]
+    assert state['last_digest_date'] == '2026-10-01'
+
+
+def test_scheduled_digest_date_uses_tbilisi_and_21h_boundary():
+    assert monitor.scheduled_digest_date(datetime.fromisoformat('2026-10-01T16:59:59+00:00')) == '2026-09-30'
+    assert monitor.scheduled_digest_date(datetime.fromisoformat('2026-10-01T17:00:00+00:00')) == '2026-10-01'
+
+
 def test_corrupt_state_not_silently_reset(tmp_path):
     path = tmp_path/'state.json'
     path.write_text('{broken')
