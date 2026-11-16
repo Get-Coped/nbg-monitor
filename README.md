@@ -1,6 +1,6 @@
 # NBG bond publication monitor
 
-Tracks actual bond publications on [NBG's public securities page](https://nbg.gov.ge/supervision/public-companies), with Telegram alerts and a daily bond digest. Ordinary page code, rotating link suffixes, issuer website links, name formatting and status-date edits do not produce alerts.
+Tracks actual bond publications on [NBG's public securities page](https://nbg.gov.ge/supervision/public-companies), with Telegram alerts within minutes during business hours and a daily bond digest at 21:00 Tbilisi. Ordinary page code, rotating link suffixes, issuer website links, name formatting and status-date edits do not produce alerts.
 
 ## What gets reported
 
@@ -15,11 +15,27 @@ Shares are excluded from alerts and the bond totals. The digest explicitly shows
 
 ## Schedule and cost
 
-The page is fetched at **08:15, 12:15, 16:15 and 20:15 Tbilisi time**, every day. That is four page requests per day rather than 96. Detection happens at the next successful check: typically up to four hours during the day, with a twelve-hour overnight gap. GitHub can delay scheduled jobs.
+Timing is driven by the Cloudflare Worker's cron triggers, not by GitHub's scheduler. GitHub starts scheduled workflows hours late and drops some of them (in November 2026 the 21:00 digest was arriving between 01:00 and 02:30, and only two of four daily checks ran), so GitHub's schedule is kept only as a backup.
 
-The **21:00 Tbilisi digest** reads saved data and makes no NBG request. It shows bond entries, change from the preceding digest, issuer count, assigned/pending ISINs, and publications/removals since the last digest. Its reporting window continues from the last successfully delivered digest, so an event after 21:00 is not lost at midnight. A repeated digest run on the same day does not send it twice.
+| When (Tbilisi) | What | NBG traffic |
+| --- | --- | --- |
+| Mon–Fri 09:00–19:00, every 2 minutes | Fast poll: the Worker fetches the page and compares a fingerprint of the listed securities | One page request per poll (about 300 a day) |
+| When the fingerprint changes | Full check in GitHub Actions: parsing, PDF terms, Telegram alerts | One page request, plus new PDFs |
+| Every day 20:45 | Full check, so the digest is current; also the daily check on weekends | One page request |
+| Every day 21:00 | Digest from saved data | None |
+| 08:15, 12:15, 16:15, 20:15 and 21:30 | GitHub's own schedule, **backup only**; usually runs hours late | One page request each (none for the digest) |
 
-A code/configuration deployment also performs one check. There is no browser, automatic WAF bypass, paid AI API, paid OCR service or external database. Standard GitHub-hosted runners on public repositories are currently free under [GitHub's billing rules](https://docs.github.com/en/actions/concepts/billing-and-usage).
+A new publication during business hours normally reaches Telegram about two to four minutes after NBG updates the page: up to two minutes until the next poll, then roughly a minute for GitHub to start the job and extract terms. Outside business hours it is picked up by the 20:45 check, by the first poll at 09:00 on the next working day, or by a backup run. Georgian public holidays are polled like any other weekday.
+
+The fingerprint covers each record's ID, issuer code, instrument type, ISIN and document links. It ignores the random `?v=` suffix, issuer spelling and status dates, so ordinary page noise starts nothing. The Worker stores the new fingerprint only after GitHub has accepted the job, then confirms that the job succeeded; a failed check is retried up to three times before the owner is told. A job already waiting in GitHub's queue is never displaced.
+
+If the Worker itself cannot read the page (firewall block, timeout, maintenance page) five times in a row, it tells the owner and falls back to a full GitHub check every ten minutes during business hours until polling recovers. If the page changes more than 40 times in one day, further full checks are limited to one every 30 minutes. If GitHub refuses to start jobs three times in a row (for example an expired `ON_DEMAND_GITHUB_TOKEN`), the owner is told once. These notices go to the owner only. The owner can send **/status** to see the last successful poll, the last detected change and the last confirmed digest.
+
+The **21:00 digest** reads saved data and makes no NBG request. It shows bond entries, change from the preceding digest, issuer count, assigned/pending ISINs, and publications/removals since the last digest. Its reporting window continues from the last successfully delivered digest. The Worker starts it at 21:00, confirms delivery and retries through the hour. There is one digest per 21:00-to-21:00 window: a backup run arriving after midnight neither repeats a delivered digest nor uses up the following evening's.
+
+A removal still needs two consecutive successful checks, so it is confirmed by the next full check (normally 20:45) rather than within minutes.
+
+A code/configuration deployment also performs one check. There is no browser, automatic WAF bypass, paid AI API, paid OCR service or external database. Standard GitHub-hosted runners on public repositories are currently free under [GitHub's billing rules](https://docs.github.com/en/actions/concepts/billing-and-usage). The polling fits the Workers Free plan (three of its five cron triggers per account). **Changing the schedule means editing `telegram-worker/wrangler.toml` and `telegram-worker/src/scheduler.js`, then rerunning the deployment workflow.**
 
 ## Prospectus terms
 
@@ -102,7 +118,7 @@ Existing historical PDFs remain untouched until you explicitly select **Extract 
 
 The default limit is 50 invited friends. New members receive future notifications, not a replay of earlier alerts. Replies to requested jobs are routed to the original requester; monitor events discovered during those jobs still notify all active subscribers. Revoking membership also suppresses queued deliveries and private results.
 
-The private Durable Object is created by the Worker deployment's SQLite migration and uses the Workers Free plan. No extra API key, paid AI service, polling loop, KV namespace or subscriber list in GitHub is required. A pending alarm runs only when notifications need delivery. Private request and delivery receipts expire after 30 days; invite links after seven days. Keep observability payload logging disabled.
+The private Durable Object is created by the Worker deployment's SQLite migration and uses the Workers Free plan. No extra API key, paid AI service, KV namespace or subscriber list in GitHub is required. A pending alarm runs only when notifications need delivery; the scheduler described above keeps its small state in the same Durable Object. Private request and delivery receipts expire after 30 days; invite links after seven days. Keep observability payload logging disabled.
 
 The monitor and on-demand workflows set `TELEGRAM_WORKER_URL` to the deployed Worker origin and authenticate relay calls with a purpose-specific hash of the existing bot token. During first rollout only, a missing (404) broadcast relay falls back to owner delivery. Private results never fall back to the owner or broadcast. Other relay errors retain the public outbox for retry. A successfully queued notification advances the monitor cursor; per-recipient delivery then proceeds privately in Cloudflare. If moving or forking the deployment, update the Worker origin in both workflows.
 
@@ -119,7 +135,7 @@ No bot token needs to be pasted into chat or copied into source files. The deplo
 
 Settings: [Actions secrets](https://github.com/Get-Coped/nbg-monitor/settings/secrets/actions) · [Actions variables](https://github.com/Get-Coped/nbg-monitor/settings/variables/actions).
 
-After handler code changes or credential rotation, rerun the deployment workflow. No additional scheduled page checks are created. Do not enable paid plans solely to activate these features. For setup details see [Cloudflare's GitHub Actions documentation](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) and [GitHub's fine-grained token instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
+After handler code changes, schedule changes or credential rotation, rerun the deployment workflow; the cron triggers are installed by that deployment. Do not enable paid plans solely to activate these features. For setup details see [Cloudflare's GitHub Actions documentation](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/) and [GitHub's fine-grained token instructions](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens).
 
 Run the request-handler tests without a bot or Cloudflare account:
 
@@ -148,6 +164,6 @@ The monitor treats a new public entry/document before ISIN assignment as a preli
 
 Extracted results retain coupon ranges (including 6.5–7.0% with a single percent sign), fixed/floating status and reference-rate spreads, placement agent, issue amount/currency, tenor, coupon frequency, issue date where explicitly stated, and cited restrictions. Missing or ambiguous values remain unresolved. Combined preliminary-offering-terms/prospectus PDFs are supported within the existing 60-page limit.
 
-A preliminary download failure may be retried after 15 minutes; documents with an ISIN retain the 12-hour interval. Both keep the three-attempt-per-document limit, two PDF attempts per job and shared daily request limit. Pending preliminary extractions run before other pending PDFs. The bot explains failure reasons and the next retry time, and avoids dispatching jobs when all documents are cached, cooling down or have exhausted their attempts. No additional scheduled NBG checks are introduced.
+A preliminary download failure may be retried after 15 minutes; documents with an ISIN retain the 12-hour interval. Both keep the three-attempt-per-document limit, two PDF attempts per job and shared daily request limit. A retry happens at the next full check, not at every two-minute poll. Pending preliminary extractions run before other pending PDFs. The bot explains failure reasons and the next retry time, and avoids dispatching jobs when all documents are cached, cooling down or have exhausted their attempts.
 
 The Preliminary terms menu also shows successfully extracted earlier preliminary documents after replacement by final terms. These are clearly marked historical; the original NBG link may no longer be available. /preliminary followed by an issuer can retrieve its saved earlier terms when it has no current preliminary entry.

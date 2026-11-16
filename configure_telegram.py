@@ -44,7 +44,8 @@ def configure():
             status = health.json()
             if (status.get("service") == "nbg-telegram-requests" and status.get("configured")
                     and status.get("jobs_enabled") and status.get("friends_enabled")
-                    and status.get("relay_version") == 1 and status.get("preliminary_enabled")):
+                    and status.get("relay_version") == 1 and status.get("preliminary_enabled")
+                    and status.get("scheduler_enabled")):
                 break
         except (requests.RequestException, ValueError):
             pass
@@ -71,7 +72,8 @@ def configure():
     api("setMyCommands", {"commands":commands + [
         {"command":"invite","description":"Create a one-use invitation for a friend"},
         {"command":"friends","description":"View friends and remove access"},
-        {"command":"cancelinvites","description":"Cancel unused invitation links"}],
+        {"command":"cancelinvites","description":"Cancel unused invitation links"},
+        {"command":"status","description":"Polling and schedule health"}],
         "scope":{"type":"chat","chat_id":chat_id}})
     if chat_id.isdecimal():
         api("setChatMenuButton", {"chat_id":chat_id, "menu_button":{"type":"commands"}})

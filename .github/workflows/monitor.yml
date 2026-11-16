@@ -1,11 +1,15 @@
 name: NBG prospectus monitor
+# The Cloudflare Worker reads this title to confirm that a job it started finished.
+run-name: ${{ (inputs.mode == 'digest' || github.event.schedule == '30 17 * * *') && 'NBG digest' || 'NBG check' }}
 
 on:
   schedule:
-    # Four page requests a day: 08:15, 12:15, 16:15, 20:15 Tbilisi (UTC+4).
+    # BACKUP ONLY. GitHub starts scheduled jobs hours late and drops some, so the
+    # Cloudflare Worker (telegram-worker/wrangler.toml) starts checks and the 21:00
+    # digest on time through workflow_dispatch. These run if the Worker ever cannot.
     - cron: "15 4,8,12,16 * * *"
-    # Digest reads saved data only. GitHub schedules can run late.
-    - cron: "0 17 * * *"
+    # Backup digest: skipped when tonight's 21:00 digest was already delivered.
+    - cron: "30 17 * * *"
   push:
     branches: [main]
     paths: [telegram_relay.py, monitor.py, registry.py, prospectus.py, requirements.txt, .github/workflows/monitor.yml]
@@ -48,7 +52,7 @@ jobs:
           SCHEDULE: ${{ github.event.schedule }}
           MODE: ${{ inputs.mode }}
         run: |
-          if [ "$SCHEDULE" = "0 17 * * *" ] || [ "$MODE" = "digest" ]; then
+          if [ "$SCHEDULE" = "30 17 * * *" ] || [ "$MODE" = "digest" ]; then
             python monitor.py --digest
           else
             python monitor.py

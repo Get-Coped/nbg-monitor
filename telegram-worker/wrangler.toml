@@ -7,6 +7,11 @@ workers_dev = true
 [vars]
 GITHUB_REPOSITORY = "Get-Coped/nbg-monitor"
 
+# Tbilisi is UTC+4. Two-minute NBG poll 09:00-19:00 (weekdays are filtered in code),
+# one full check at 20:45, and the 21:00 digest with retries through the hour.
+[triggers]
+crons = ["*/2 5-14 * * *", "45 16 * * *", "*/5 17 * * *"]
+
 [observability]
 enabled = false
 

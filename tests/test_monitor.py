@@ -273,3 +273,29 @@ def test_dry_run_does_not_write_send_or_download(tmp_path):
          patch('requests.post',side_effect=AssertionError('unexpected message')):
         monitor.main()
     assert statepath.read_bytes()==original
+
+
+def test_digest_is_one_per_21h_window_not_per_calendar_date(tmp_path):
+    path = tmp_path/'state.json'
+    state = baseline()
+    sent = []
+    evening = datetime(2026,11,16,21,0,25,tzinfo=TBILISI)
+    monitor.run_digest(state,evening,path,sender=sent.append)
+    assert len(sent) == 1
+    # GitHub's delayed backup arrives after midnight: same window, nothing repeated.
+    monitor.run_digest(state,datetime(2026,11,17,1,27,tzinfo=TBILISI),path,sender=sent.append)
+    monitor.run_digest(state,datetime(2026,11,17,20,59,tzinfo=TBILISI),path,sender=sent.append)
+    assert len(sent) == 1
+    # ...and it has not used up the following evening's digest.
+    monitor.run_digest(state,datetime(2026,11,17,21,0,20,tzinfo=TBILISI),path,sender=sent.append)
+    assert len(sent) == 2
+
+
+def test_late_digest_from_old_schedule_does_not_block_tonight(tmp_path):
+    # Saved state from the delayed GitHub schedule: delivered 01:27, dated "today".
+    state = baseline()
+    state['last_digest_at'] = '2026-11-16T01:27:10+04:00'
+    state['last_digest_date'] = '2026-11-16'
+    sent = []
+    monitor.run_digest(state,datetime(2026,11,16,21,0,20,tzinfo=TBILISI),tmp_path/'state.json',sender=sent.append)
+    assert len(sent) == 1

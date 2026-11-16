@@ -12,7 +12,7 @@ def response(data=None, code=200):
 
 def test_setup_authenticates_worker_before_changing_webhook():
     calls = []
-    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1,"preliminary_enabled":True})
+    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1,"preliminary_enabled":True,"scheduler_enabled":True})
     def post(url, json, **kwargs):
         calls.append((url,json,kwargs))
         if url == URL+"/telegram":
@@ -35,7 +35,7 @@ def test_setup_authenticates_worker_before_changing_webhook():
     assert "invite" in {c["command"] for c in owner["commands"]}
 
 def test_bad_worker_auth_does_not_touch_telegram():
-    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1,"preliminary_enabled":True})
+    health = response({"service":"nbg-telegram-requests","configured":True,"jobs_enabled":True,"friends_enabled":True,"relay_version":1,"preliminary_enabled":True,"scheduler_enabled":True})
     with patch.dict("os.environ", ENV, clear=True), patch.object(setup.requests,"get",return_value=health), patch.object(setup.requests,"post",return_value=response(code=403)) as post:
         with pytest.raises(ValueError):
             setup.configure()
@@ -51,7 +51,7 @@ def test_unexpected_deployment_origin_rejected(url):
 
 def test_setup_waits_for_updated_worker_before_installing_commands():
     old = response({'service':'nbg-telegram-requests','configured':True,'jobs_enabled':True,'friends_enabled':True,'relay_version':1})
-    ready = response({'service':'nbg-telegram-requests','configured':True,'jobs_enabled':True,'friends_enabled':True,'relay_version':1,'preliminary_enabled':True})
+    ready = response({'service':'nbg-telegram-requests','configured':True,'jobs_enabled':True,'friends_enabled':True,'relay_version':1,'preliminary_enabled':True,'scheduler_enabled':True})
     def post(url, json, **kwargs):
         if url == URL+'/telegram':
             return response()
