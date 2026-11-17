@@ -1,10 +1,25 @@
 /** Private membership, routing and delivery receipts. Never stored in GitHub. */
 import {handle, telegram, digestHex, esc, MENU} from "./worker.js";
+import {tick, status} from "./scheduler.js";
 const DAY=86400000, MAX_FRIENDS=50;
 export class FriendsHub {
   constructor(ctx,env) {this.ctx=ctx;this.env=env;this.storage=ctx.storage;this.tail=Promise.resolve();}
   serial(fn) {const p=this.tail.then(fn);this.tail=p.catch(()=>{});return p;}
-  fetch(request) {return this.serial(()=>handle(request,this.env,fetch,null,this));}
+  fetch(request) {
+    // Only the Worker's own cron handler can address this host; public requests
+    // reach the hub through handle(), which forwards /telegram and /relay alone.
+    if(new URL(request.url).hostname==="scheduler.internal")return this.schedule(request);
+    return this.serial(()=>handle(request,this.env,fetch,null,this));
+  }
+  async schedule(request) {
+    // Outside the message queue: a slow NBG response must not delay bot replies.
+    try {
+      const {time}=await request.json();
+      this.ticking=(this.ticking || Promise.resolve()).catch(()=>{}).then(()=>tick(this,time));
+      await this.ticking;
+    }catch{}
+    return new Response("OK");
+  }
   alarm() {return this.serial(()=>this.drain());}
   owner() {return String(this.env.TELEGRAM_CHAT_ID);}
   async member(chat) {
@@ -67,6 +82,7 @@ export class FriendsHub {
         "\n\nUse /invite to invite someone. Tap a name below to remove their access.",
         reply_markup:{inline_keyboard:[...members.map(m=>[{text:"Remove "+m.name,callback_data:"revoke:"+m.chat}]),[{text:"Main menu",callback_data:"menu"}]]}};
     }
+    if(c==="status")return {text:isOwner?await status(this):"Only the owner can view the monitor status.",reply_markup:MENU};
     if(c==="stop" || c==="resume") {
       const m=await this.member(chat);
       if(m?.active)await this.storage.put("member:"+chat,{...m,alerts:c==="resume"});

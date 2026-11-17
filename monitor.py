@@ -362,10 +362,21 @@ def digest_messages(state, now):
     return chunk_lines(lines), counts
 
 
+def digest_window(now):
+    """The 21:00 Tbilisi boundary this digest belongs to.
+
+    One digest per 21:00-to-21:00 window, whatever the calendar date of delivery.
+    A backup run arriving after midnight therefore neither repeats a delivered
+    digest nor uses up the following evening's.
+    """
+    start = now.replace(hour=21, minute=0, second=0, microsecond=0)
+    return (start if now >= start else start - timedelta(days=1)).isoformat()
+
+
 def run_digest(state, now, path, dry_run=False, sender=send_telegram):
     if state.get("v") != VERSION:
         raise RuntimeError("Run one successful check to establish the corrected baseline before the digest")
-    if state.get("last_digest_date") == now.date().isoformat() and not dry_run:
+    if state.get("last_digest_window") == digest_window(now) and not dry_run:
         print("Daily digest already delivered.")
         return
     if dry_run:
@@ -381,7 +392,8 @@ def run_digest(state, now, path, dry_run=False, sender=send_telegram):
         deliver_chunk(pending["messages"][i], "digest:" + pending["cutoff"] + ":" + str(i), sender)
         pending["sent_chunks"] = i+1
         save_state(state, path)
-    state.update(last_digest_at=pending["cutoff"], last_digest_date=now.date().isoformat(), digest_counts=pending["counts"])
+    state.update(last_digest_at=pending["cutoff"], last_digest_date=now.date().isoformat(),
+                 last_digest_window=digest_window(now), digest_counts=pending["counts"])
     state.pop("pending_digest")
     save_state(state, path)
 

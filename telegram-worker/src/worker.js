@@ -252,7 +252,7 @@ export async function handle(request,env,net=fetch,cache=globalThis.caches?.defa
   if(url.pathname==="/health" && request.method==="GET") {
     const configured=Boolean(env.TELEGRAM_TOKEN && env.TELEGRAM_CHAT_ID);
     return Response.json({service:"nbg-telegram-requests",configured,jobs_enabled:Boolean(env.GITHUB_DISPATCH_TOKEN),
-      preliminary_enabled:true,friends_enabled:Boolean(env.FRIENDS),relay_version:env.FRIENDS?1:0},{status:configured?200:503});
+      preliminary_enabled:true,friends_enabled:Boolean(env.FRIENDS),relay_version:env.FRIENDS?1:0,scheduler_enabled:Boolean(env.FRIENDS)},{status:configured?200:503});
   }
   if(!["/telegram","/relay"].includes(url.pathname) || request.method!=="POST")return new Response("Not found",{status:404});
   if(!env.TELEGRAM_TOKEN || !env.TELEGRAM_CHAT_ID)return new Response("Not configured",{status:503});
@@ -303,7 +303,7 @@ export async function handle(request,env,net=fetch,cache=globalThis.caches?.defa
     }
     if(!delivery) {
       let c=String(update.callback_query?.data ?? command(text || "/help"));
-      const admin=text.match(/^\/(invite|friends|cancelinvites|stop)(?:@\w+)?\s*$/);
+      const admin=text.match(/^\/(invite|friends|cancelinvites|stop|status)(?:@\w+)?\s*$/);
       if(admin)c=admin[1];
       if(start && !start[1])c="resume";
       let result=hub?await hub.manage(c,chat,isOwner,receipt,net):null;
@@ -335,4 +335,12 @@ export async function handle(request,env,net=fetch,cache=globalThis.caches?.defa
     return new Response("Temporary request failure",{status:503});
   }
 }
-export default {fetch(request,env){return handle(request,env);}};
+export default {
+  fetch(request,env){return handle(request,env);},
+  // Cloudflare cron (wrangler.toml). The hub decides what the minute calls for.
+  async scheduled(event,env) {
+    if(!env.FRIENDS)return;
+    await env.FRIENDS.get(env.FRIENDS.idFromName("friends-v1")).fetch("https://scheduler.internal/tick",
+      {method:"POST",body:JSON.stringify({time:event.scheduledTime})});
+  }
+};
