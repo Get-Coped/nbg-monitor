@@ -2193,8 +2193,8 @@
     }
   ],
   "outbox": [],
-  "last_digest_at": "2026-11-17T21:00:44.284352+04:00",
-  "last_digest_date": "2026-11-17",
+  "last_digest_at": "2026-11-18T21:00:41.455478+04:00",
+  "last_digest_date": "2026-11-18",
   "digest_counts": {
     "bonds": 49,
     "issuers": 22,
@@ -2211,5 +2211,5 @@
     },
     "last_refresh_attempt": "2026-11-09T13:45:00.242120+04:00"
   },
-  "last_digest_window": "2026-11-17T21:00:00+04:00"
+  "last_digest_window": "2026-11-18T21:00:00+04:00"
 }
