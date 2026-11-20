@@ -2258,13 +2258,13 @@
     }
   ],
   "outbox": [],
-  "last_digest_at": "2026-11-19T21:00:42.197554+04:00",
-  "last_digest_date": "2026-11-19",
+  "last_digest_at": "2026-11-20T21:00:43.733134+04:00",
+  "last_digest_date": "2026-11-20",
   "digest_counts": {
     "bonds": 49,
     "issuers": 22,
-    "assigned": 47,
-    "awaiting_isin": 2,
+    "assigned": 48,
+    "awaiting_isin": 1,
     "shares": 10
   },
   "on_demand": {
@@ -2276,5 +2276,5 @@
     },
     "last_refresh_attempt": "2026-11-09T13:45:00.242120+04:00"
   },
-  "last_digest_window": "2026-11-19T21:00:00+04:00"
+  "last_digest_window": "2026-11-20T21:00:00+04:00"
 }
